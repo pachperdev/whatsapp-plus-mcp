@@ -23,14 +23,22 @@ Resueltos en esta tanda de mantenimiento — todos commiteados en `main` y valid
 | Unificar chats lid/número en `list_chats` | ✅ validado en vivo | `e71de32` |
 | Tools nuevas: `list_groups`, `mark_as_read`, `react_to_message` | ✅ validado en vivo | `f845430` |
 
-### Pendiente (no crítico)
-- **M1** reconexión duplicada (auto-reconnect de whatsmeow vs handler manual de `Disconnected`).
-- **M2** batch transaction en history-sync (los inserts siguen uno por uno).
-- **M3** índices en `messages(chat_jid, timestamp)`.
-- **M4** path traversal en `downloadMedia` (filename del remitente) — mitigar con `filepath.Base`.
-- **M6** `_load_contact_index` ignora `our_jid` (latente con multi-cuenta).
-- **M7** `get_direct_chat_by_contact` con `LIKE '%phone%'` (falsos positivos).
-- Resto de §2/§3 (menores) y más tools (`edit_message`, `delete_message`, `get_profile_picture`, presencia/typing, `get_unread`).
+### Resuelto en la 2da tanda (no críticos)
+| Ítem | Commit |
+|---|---|
+| **M1** reconexión sin race (solo `EnableAutoReconnect`) | `6d46db2` |
+| **M3** índices `messages(chat_jid, timestamp)` + `chats(last_message_time)` | `33afa7f` |
+| **M4** path traversal en `downloadMedia` (`filepath.Base` del filename) | `33afa7f` |
+| **M7** `get_direct_chat_by_contact` por jid exacto + lid mapeado (sin `LIKE %phone%`) | `d9c37d3` |
+| **B** `rand.Seed`→RNG local, `min()` builtin | `6d46db2` |
+| **B** temp `.ogg` cleanup + `makedirs(exist_ok=True)` | `d9c37d3` |
+| `list_chats(query)` busca por nombre resuelto (no lid crudo) | `cb23d93` |
+
+### Pendiente (no crítico, bajo impacto)
+- **M2** batch transaction en history-sync (inserts uno por uno). **Ya mitigado** por T1 (goroutine) + T2 (WAL): no bloquea; es optimización, no se hizo por riesgo/beneficio.
+- **M6** `_load_contact_index` ignora `our_jid` — latente, **sin impacto con una sola cuenta** vinculada.
+- Menores: adaptador `datetime`→str de sqlite deprecado en Python 3.12; paginación `OFFSET` sin tie-breaker.
+- Tools extra: `edit_message`, `delete_message`, `get_profile_picture`, presencia/typing, `get_unread`.
 - **Nota de alcance:** el sandbox de media, `mark_as_read` y `react_to_message` asumen **chats directos**; en grupos el `sender` del participante queda acotado.
 
 ---
