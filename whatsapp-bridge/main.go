@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"bytes"
 
 	"go.mau.fi/whatsmeow"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
@@ -883,6 +885,79 @@ func validateMediaPath(p string) error {
 	return nil
 }
 
+// blockViaLID actualiza la blocklist replicando el formato NUEVO del protocolo de
+// WhatsApp (item por LID + pn_jid + dhash). El UpdateBlocklist de whatsmeow aun
+// envia el formato viejo (solo jid+action) y el server responde 400. Como sendIQ es
+// privado, enviamos el IQ con DangerousInternals().SendNode (no espera respuesta) y
+// verificamos el resultado con GetBlocklist. Ref: whatsmeow PR #1137.
+func blockViaLID(client *whatsmeow.Client, jid types.JID, action events.BlocklistChangeAction) (bool, error) {
+	ctx := context.Background()
+	var lidJID, pnJID types.JID
+	switch jid.Server {
+	case types.DefaultUserServer: // @s.whatsapp.net
+		pnJID = jid
+		lid, err := client.Store.LIDs.GetLIDForPN(ctx, jid)
+		if err != nil || lid.IsEmpty() {
+			info, ierr := client.GetUserInfo(ctx, []types.JID{jid})
+			if ierr != nil {
+				return false, fmt.Errorf("could not resolve LID: %v", ierr)
+			}
+			lid = info[jid].LID
+		}
+		if lid.IsEmpty() {
+			return false, fmt.Errorf("no LID found for %s", jid)
+		}
+		lidJID = lid
+	case types.HiddenUserServer: // @lid
+		lidJID = jid
+		if pn, err := client.Store.LIDs.GetPNForLID(ctx, jid); err == nil {
+			pnJID = pn
+		}
+	default:
+		return false, fmt.Errorf("unsupported jid server: %s", jid.Server)
+	}
+
+	attrs := waBinary.Attrs{
+		"jid":    lidJID,
+		"action": string(action),
+		"dhash":  strconv.FormatInt(time.Now().UnixMilli(), 10),
+	}
+	if action == events.BlocklistChangeActionBlock && !pnJID.IsEmpty() {
+		attrs["pn_jid"] = pnJID
+	}
+	node := waBinary.Node{
+		Tag: "iq",
+		Attrs: waBinary.Attrs{
+			"id":    client.GenerateMessageID(),
+			"xmlns": "blocklist",
+			"type":  "set",
+			"to":    types.ServerJID,
+		},
+		Content: []waBinary.Node{{Tag: "item", Attrs: attrs}},
+	}
+	if err := client.DangerousInternals().SendNode(ctx, node); err != nil {
+		return false, fmt.Errorf("send blocklist iq: %v", err)
+	}
+
+	// SendNode no espera la respuesta del IQ -> verificamos con GetBlocklist.
+	time.Sleep(900 * time.Millisecond)
+	bl, err := client.GetBlocklist(ctx)
+	if err != nil {
+		return false, fmt.Errorf("verify via GetBlocklist: %v", err)
+	}
+	inList := false
+	for _, b := range bl.JIDs {
+		if (lidJID.User != "" && b.User == lidJID.User) || (pnJID.User != "" && b.User == pnJID.User) {
+			inList = true
+			break
+		}
+	}
+	if action == events.BlocklistChangeActionBlock {
+		return inList, nil
+	}
+	return !inList, nil // unblock: exito si ya NO esta en la lista
+}
+
 // Start a REST API server to expose the WhatsApp client functionality
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
 	token, tokErr := getOrCreateBridgeToken()
@@ -1466,9 +1541,15 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		if req.Action == "unblock" {
 			action = events.BlocklistChangeActionUnblock
 		}
-		if _, err := client.UpdateBlocklist(context.Background(), jid, action); err != nil {
+		ok, err := blockViaLID(client, jid, action)
+		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		if !ok {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "blocklist update not reflected (verified via GetBlocklist)"})
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": string(action) + "ed"})
