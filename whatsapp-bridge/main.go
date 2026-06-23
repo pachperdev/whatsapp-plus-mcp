@@ -225,9 +225,10 @@ type SendMessageResponse struct {
 
 // SendMessageRequest represents the request body for the send message API
 type SendMessageRequest struct {
-	Recipient string `json:"recipient"`
-	Message   string `json:"message"`
-	MediaPath string `json:"media_path,omitempty"`
+	Recipient       string `json:"recipient"`
+	Message         string `json:"message"`
+	MediaPath       string `json:"media_path,omitempty"`
+	QuotedMessageID string `json:"quoted_message_id,omitempty"`
 }
 
 // MarkReadRequest marks one or more messages as read
@@ -319,8 +320,35 @@ type BlockRequest struct {
 	Action string `json:"action"` // block | unblock
 }
 
+// buildQuotedContext arma el ContextInfo para citar (reply) un mensaje previo,
+// buscandolo en messages.db. En chats directos el Participant (autor del citado) es
+// uno mismo si el mensaje es propio, o el chat (contacto) si fue recibido.
+// Nota: en grupos el autor real puede no ser el chat_jid (limitacion conocida).
+func buildQuotedContext(store *MessageStore, client *whatsmeow.Client, quotedID string) *waProto.ContextInfo {
+	var senderChatJID, content string
+	var isFromMe bool
+	err := store.db.QueryRow(
+		"SELECT chat_jid, content, is_from_me FROM messages WHERE id = ? LIMIT 1", quotedID,
+	).Scan(&senderChatJID, &content, &isFromMe)
+	if err != nil {
+		return nil
+	}
+	participant := senderChatJID
+	if isFromMe && client.Store.ID != nil {
+		participant = client.Store.ID.ToNonAD().String()
+	}
+	ctxInfo := &waProto.ContextInfo{
+		StanzaID:    proto.String(quotedID),
+		Participant: proto.String(participant),
+	}
+	if content != "" {
+		ctxInfo.QuotedMessage = &waProto.Message{Conversation: proto.String(content)}
+	}
+	return ctxInfo
+}
+
 // Function to send a WhatsApp message
-func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string) (bool, string) {
+func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, quotedMessageID string) (bool, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp"
 	}
@@ -492,6 +520,12 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 				FileSHA256:    resp.FileSHA256,
 				FileLength:    &resp.FileLength,
 			}
+		}
+	} else if quotedMessageID != "" {
+		// Reply/quote: citar un mensaje previo con ContextInfo
+		msg.ExtendedTextMessage = &waProto.ExtendedTextMessage{
+			Text:        proto.String(message),
+			ContextInfo: buildQuotedContext(messageStore, client, quotedMessageID),
 		}
 	} else {
 		msg.Conversation = proto.String(message)
@@ -1005,7 +1039,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		fmt.Println("Received request to send message", req.Message, req.MediaPath)
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, req.MediaPath)
+		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, req.MediaPath, req.QuotedMessageID)
 		fmt.Println("Message sent", success, message)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
