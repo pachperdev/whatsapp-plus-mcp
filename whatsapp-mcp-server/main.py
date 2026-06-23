@@ -39,7 +39,9 @@ from whatsapp import (
     mark_chat as whatsapp_mark_chat,
     star_message as whatsapp_star_message,
     get_chat_settings as whatsapp_get_chat_settings,
-    request_more_history as whatsapp_request_more_history
+    request_more_history as whatsapp_request_more_history,
+    create_group as whatsapp_create_group,
+    update_group_participants as whatsapp_update_group_participants
 )
 
 # Initialize FastMCP server
@@ -575,6 +577,28 @@ def request_more_history(chat_jid: str, count: int = 50) -> Dict[str, Any]:
     """
     success, status_message = whatsapp_request_more_history(chat_jid, count)
     return {"success": success, "message": status_message}
+
+@mcp.tool()
+def create_group(name: str, participants: List[str]) -> Dict[str, Any]:
+    """Create a new WhatsApp group.
+
+    Args:
+        name: Group name (max 25 characters)
+        participants: List of phone numbers (country code, no + or symbols) or JIDs to add.
+                      Your own account is added automatically — do NOT include it.
+    """
+    return whatsapp_create_group(name, participants)
+
+@mcp.tool()
+def update_group_participants(group_jid: str, participants: List[str], action: str) -> Dict[str, Any]:
+    """Add, remove, promote, or demote participants in a group. Requires you to be an admin.
+
+    Args:
+        group_jid: The group JID (e.g. "123456789@g.us")
+        participants: List of phone numbers or JIDs to act on
+        action: One of "add", "remove", "promote", "demote"
+    """
+    return whatsapp_update_group_participants(group_jid, participants, action)
 
 if __name__ == "__main__":
     # Initialize and run the server

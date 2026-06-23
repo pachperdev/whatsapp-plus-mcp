@@ -1279,3 +1279,13 @@ def request_more_history(chat_jid: str, count: int = 50) -> Tuple[bool, str]:
     history sync y quedan en la DB. Es normal que no llegue nada (telefono offline / sin mas)."""
     d = _bridge_post("request_history", {"chat_jid": chat_jid, "count": count})
     return d.get("success", False), d.get("message", "")
+
+
+def create_group(name: str, participants: List[str]) -> Dict[str, Any]:
+    """Crea un grupo nuevo (nombre max 25 chars) con los participantes dados (numeros o JIDs)."""
+    return _bridge_post("create_group", {"name": name, "participants": participants})
+
+
+def update_group_participants(group_jid: str, participants: List[str], action: str) -> Dict[str, Any]:
+    """Agrega/quita/promueve/degrada participantes. action: add|remove|promote|demote (requiere admin)."""
+    return _bridge_post("update_participants", {"group_jid": group_jid, "participants": participants, "action": action})

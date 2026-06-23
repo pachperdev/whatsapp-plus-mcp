@@ -344,6 +344,19 @@ type HistoryRequest struct {
 	Count   int    `json:"count"`
 }
 
+// CreateGroupRequest crea un grupo nuevo
+type CreateGroupRequest struct {
+	Name         string   `json:"name"`
+	Participants []string `json:"participants"`
+}
+
+// UpdateParticipantsRequest agrega/quita/promueve/degrada participantes de un grupo
+type UpdateParticipantsRequest struct {
+	GroupJID     string   `json:"group_jid"`
+	Participants []string `json:"participants"`
+	Action       string   `json:"action"` // add | remove | promote | demote
+}
+
 // lastMsgKey arma el MessageKey + timestamp del ultimo mensaje de un chat,
 // requerido por BuildArchive y BuildMarkChatAsRead.
 func lastMsgKey(store *MessageStore, chatJID types.JID) (*waCommon.MessageKey, time.Time) {
@@ -441,6 +454,27 @@ func resolveMentions(text string, explicit []string) []string {
 		add(match[1] + "@s.whatsapp.net")
 	}
 	return jids
+}
+
+// parseParticipantJIDs convierte una lista de numeros o JIDs a []types.JID
+// (un numero suelto se interpreta como <numero>@s.whatsapp.net).
+func parseParticipantJIDs(raw []string) ([]types.JID, error) {
+	var jids []types.JID
+	for _, r := range raw {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		if !strings.Contains(r, "@") {
+			r = strings.TrimLeft(r, "+") + "@s.whatsapp.net"
+		}
+		j, err := types.ParseJID(r)
+		if err != nil {
+			return nil, fmt.Errorf("invalid participant %q: %w", r, err)
+		}
+		jids = append(jids, j)
+	}
+	return jids, nil
 }
 
 func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, quotedMessageID string, mentions []string) (bool, string) {
@@ -1889,6 +1923,106 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "history requested (best-effort); si el telefono primario esta online y conserva mensajes anteriores, llegan async via history sync y quedan en la DB"})
+	}))
+
+	// Handler: create group
+	http.HandleFunc("/api/create_group", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req CreateGroupRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "group name required"})
+			return
+		}
+		if len([]rune(name)) > 25 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "group name max 25 chars"})
+			return
+		}
+		parts, err := parseParticipantJIDs(req.Participants)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		if len(parts) == 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "at least one participant required"})
+			return
+		}
+		info, err := client.CreateGroup(context.Background(), whatsmeow.ReqCreateGroup{Name: name, Participants: parts})
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true, "group_jid": info.JID.String(),
+			"name": info.Name, "participant_count": len(info.Participants),
+		})
+	}))
+
+	// Handler: update group participants (add/remove/promote/demote)
+	http.HandleFunc("/api/update_participants", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req UpdateParticipantsRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		gjid, err := types.ParseJID(req.GroupJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			return
+		}
+		var action whatsmeow.ParticipantChange
+		switch req.Action {
+		case "add":
+			action = whatsmeow.ParticipantChangeAdd
+		case "remove":
+			action = whatsmeow.ParticipantChangeRemove
+		case "promote":
+			action = whatsmeow.ParticipantChangePromote
+		case "demote":
+			action = whatsmeow.ParticipantChangeDemote
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "action must be add/remove/promote/demote"})
+			return
+		}
+		parts, err := parseParticipantJIDs(req.Participants)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		if len(parts) == 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "at least one participant required"})
+			return
+		}
+		result, err := client.UpdateGroupParticipants(context.Background(), gjid, parts, action)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		results := make([]map[string]interface{}, 0, len(result))
+		for _, p := range result {
+			results = append(results, map[string]interface{}{
+				"jid": p.JID.String(), "error_code": p.Error,
+				"is_admin": p.IsAdmin,
+			})
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "action": req.Action, "results": results})
 	}))
 
 	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).
