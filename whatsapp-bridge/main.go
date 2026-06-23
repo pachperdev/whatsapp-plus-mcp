@@ -95,6 +95,9 @@ func NewMessageStore() (*MessageStore, error) {
 			PRIMARY KEY (id, chat_jid),
 			FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 		);
+
+		CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages(chat_jid, timestamp DESC);
+		CREATE INDEX IF NOT EXISTS idx_chats_lastmsg ON chats(last_message_time DESC);
 	`)
 	if err != nil {
 		db.Close()
@@ -667,6 +670,12 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 		return false, "", "", "", fmt.Errorf("failed to create chat directory: %v", err)
 	}
 
+	// Sanitizar el filename (proviene del remitente del mensaje) para evitar
+	// path traversal: un filename tipo "../../x" escaparia de chatDir.
+	filename = filepath.Base(filepath.Clean(filename))
+	if filename == "." || filename == ".." || filename == string(os.PathSeparator) {
+		filename = "file_" + messageID
+	}
 	// Generate a local path for the file
 	localPath = fmt.Sprintf("%s/%s", chatDir, filename)
 
