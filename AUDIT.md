@@ -140,21 +140,45 @@ Barrido de los 133 métodos públicos del `Client` vs las 43 tools. ~40 son infr
 conexión, pairing, proxy, HTTP clients, receipts, encrypt/decrypt helpers, `DangerousInternals`). Decisión:
 implementar **Tier A + Tier B paso a paso** (Tier A primero). Tier C NO por ahora.
 
-### Tier A — alto valor, baja complejidad
-- 🔲 **Encuestas: votar + leer votos** — `BuildPollVote(ctx, pollInfo *types.MessageInfo, optionNames)` → `SendMessage`; votos entrantes con `DecryptPollVote(ctx, *events.Message)` en el handler. (Hoy `send_poll` crea pero no se vota ni se leen resultados.)
-- 🔲 **Grupos — foto y modos** — `SetGroupPhoto(jid, avatar []byte)`, `SetGroupAnnounce(jid, bool)` (solo admins escriben), `SetGroupLocked(jid, bool)` (solo admins editan info), `SetGroupDescription(jid, desc)`.
-- 🔲 **Grupos — solicitudes de ingreso** — `GetGroupRequestParticipants(jid)` + `UpdateGroupRequestParticipants(jid, jids, action)` (approve/reject) + `SetGroupJoinApprovalMode(jid, bool)`.
-- 🔲 **`GetBusinessProfile(jid)`** — info de cuentas business (relevante para comercios).
-- 🔲 **`Logout(ctx)`** → endpoint `/api/logout` (desvincular desde el chat; encaja con plug-and-play).
-- 🔲 **`SetStatusMessage(msg)`** — editar el "about" propio.
+> **Plan de desarrollo/implementación/pruebas (jun-2026).** Patrón por feature: handler REST en
+> `main.go` + función + `@mcp.tool()` en el server Python; las de eventos añaden un `case` al handler.
+> Validación en vivo + commit por lote. **Orden:** A1 → A2 → A4 → A3 → B1 → B2 → B3 → Logout.
+> Firmas verificadas contra whatsmeow @20260622. ~19 tools nuevas (43 → ~62).
 
-### Tier B — valor medio
-- 🔲 **Unirse por código:** `JoinGroupWithInvite(jid, inviter, code, expiration)` + `GetGroupInfoFromInvite(...)` (además del link ya soportado).
-- 🔲 **Presencia de terceros:** `SubscribePresence(jid)` + handler `events.Presence`/`events.ChatPresence` (last-seen/online). *(coincide con Tier 3)*
-- 🔲 **`SendPresence(state)`** — marcarse available/unavailable (requisito para recibir presencia de otros).
-- 🔲 **`RejectCall(callFrom, callID)`** — rechazar llamadas entrantes (+ escuchar `events.CallOffer`).
-- 🔲 **`GetUserDevices(jids)`** — dispositivos de un contacto.
-- 🔲 **`SetDefaultDisappearingTimer(timer)`** — timer por defecto para chats nuevos.
+**🟢 LOTE A1 — Perfil & cuenta (bajo riesgo)**
+- 🔲 `set_status_message` ← `SetStatusMessage(ctx, msg)` · `/api/set_status`. Prueba: cambiar about propio → `get_user_info(yo)` → revertir.
+- 🔲 `get_business_profile` ← `GetBusinessProfile(ctx, jid)` → `{Address,Email,Categories,BusinessHours}` · `/api/business_profile`. Prueba: contacto con `is_business:true`.
+- 🔲 `get_user_devices` ← `GetUserDevices(ctx, jids)` · `/api/user_devices`. Prueba: sobre Daniel.
+- 🔲 `set_default_disappearing` ← `SetDefaultDisappearingTimer(ctx, timer)` (presets off/24h/7d/90d) · `/api/default_disappearing`.
+
+**🟢 LOTE A2 — Administración de grupos (admin, sobre grupo de prueba)**
+- 🔲 `set_group_description` ← `SetGroupDescription(ctx, jid, desc)`.
+- 🔲 `set_group_announce` ← `SetGroupAnnounce(ctx, jid, bool)` (solo admins escriben).
+- 🔲 `set_group_locked` ← `SetGroupLocked(ctx, jid, bool)` (solo admins editan info).
+- 🔲 `set_group_photo` ← `SetGroupPhoto(ctx, jid, avatar []byte)` (recibe path de imagen).
+
+**🟡 LOTE A3 — Solicitudes de ingreso a grupos (requiere coordinación)**
+- 🔲 `set_group_join_approval` ← `SetGroupJoinApprovalMode(ctx, jid, bool)`.
+- 🔲 `get_group_join_requests` ← `GetGroupRequestParticipants(ctx, jid)`.
+- 🔲 `review_group_join_request` ← `UpdateGroupRequestParticipants(ctx, jid, jids, "approve"|"reject")` (`ParticipantChangeApprove/Reject`).
+
+**🟡 LOTE A4 — Encuestas: votar + leer votos**
+- 🔲 `vote_poll` ← `BuildPollVote(ctx, pollInfo *types.MessageInfo, optionNames)` → `SendMessage` (reconstruir el `MessageInfo` del poll desde la DB).
+- 🔲 captura de votos entrantes ← `DecryptPollVote(ctx, *events.Message)` en el handler.
+
+**🔵 LOTE B1 — Unirse por código**
+- 🔲 `get_group_info_from_invite` ← `GetGroupInfoFromInvite(ctx, jid, inviter, code, expiration)`.
+- 🔲 `join_group_with_invite` ← `JoinGroupWithInvite(ctx, jid, inviter, code, expiration)`.
+
+**🔵 LOTE B2 — Presencia**
+- 🔲 `set_presence` ← `SendPresence(ctx, state)` (`PresenceAvailable`/`PresenceUnavailable`; requisito para recibir presencia de otros).
+- 🔲 `subscribe_presence` ← `SubscribePresence(ctx, jid)` + handlers `events.Presence` (`From`/`Unavailable`/`LastSeen`) y `events.ChatPresence` (typing de terceros) → persistir.
+
+**🔵 LOTE B3 — Llamadas**
+- 🔲 `reject_call` ← `RejectCall(ctx, callFrom, callID)` + handler `events.CallOffer` (capturar llamadas entrantes).
+
+**🔴 Logout (al final, validación delicada)**
+- 🔲 `logout` ← `Logout(ctx)` · `/api/logout`. Desvincula la sesión (requiere re-escanear QR; usar el flujo QR→PNG→open ya probado).
 
 ### Tier C — NO se implementa (jun-2026, salvo que el caso de uso lo pida)
 Newsletters/Channels (~14 métodos), Comunidades (`LinkGroup`/`GetSubGroups`/`GetLinkedGroupsParticipants`),
