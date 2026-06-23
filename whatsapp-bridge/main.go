@@ -115,6 +115,18 @@ func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time
 	return err
 }
 
+// Touch a chat: create it if missing (with empty name) or just bump its
+// last_message_time, preserving the existing name. Used for outgoing messages
+// where we don't resolve a display name.
+func (store *MessageStore) TouchChat(jid string, lastMessageTime time.Time) error {
+	_, err := store.db.Exec(
+		`INSERT INTO chats (jid, name, last_message_time) VALUES (?, '', ?)
+		 ON CONFLICT(jid) DO UPDATE SET last_message_time=excluded.last_message_time`,
+		jid, lastMessageTime,
+	)
+	return err
+}
+
 // Store a message in the database
 func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, timestamp time.Time, isFromMe bool,
 	mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
@@ -211,7 +223,7 @@ type SendMessageRequest struct {
 }
 
 // Function to send a WhatsApp message
-func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message string, mediaPath string) (bool, string) {
+func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string) (bool, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp"
 	}
@@ -238,6 +250,8 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 	}
 
 	msg := &waProto.Message{}
+	// Tipo/nombre de media para persistir el saliente en la DB (ver final de la funcion)
+	var dbMediaType, dbFilename string
 
 	// Check if we have media to send
 	if mediaPath != "" {
@@ -288,6 +302,19 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 		default:
 			mediaType = whatsmeow.MediaDocument
 			mimeType = "application/octet-stream"
+		}
+
+		// Tipo y nombre para persistir el saliente en la DB
+		dbFilename = mediaPath[strings.LastIndex(mediaPath, "/")+1:]
+		switch mediaType {
+		case whatsmeow.MediaImage:
+			dbMediaType = "image"
+		case whatsmeow.MediaAudio:
+			dbMediaType = "audio"
+		case whatsmeow.MediaVideo:
+			dbMediaType = "video"
+		default:
+			dbMediaType = "document"
 		}
 
 		// Upload media to WhatsApp servers
@@ -370,10 +397,30 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 	}
 
 	// Send message
-	_, err = client.SendMessage(context.Background(), recipientJID, msg)
+	sendResp, err := client.SendMessage(context.Background(), recipientJID, msg)
 
 	if err != nil {
 		return false, fmt.Sprintf("Error sending message: %v", err)
+	}
+
+	// Persistir el saliente: WhatsApp NO lo reenvia como events.Message, asi que sin
+	// esto el historial solo reflejaria los mensajes recibidos, no los enviados.
+	if messageStore != nil {
+		chatJID := recipientJID.String()
+		var senderUser string
+		if client.Store != nil && client.Store.ID != nil {
+			senderUser = client.Store.ID.User
+		}
+		// Asegurar que el chat existe (FK) y subirlo al tope sin pisar su nombre.
+		if err := messageStore.TouchChat(chatJID, sendResp.Timestamp); err != nil {
+			fmt.Printf("warn: failed to touch chat for outgoing message: %v\n", err)
+		}
+		if err := messageStore.StoreMessage(
+			sendResp.ID, chatJID, senderUser, message, sendResp.Timestamp, true,
+			dbMediaType, dbFilename, "", nil, nil, nil, 0,
+		); err != nil {
+			fmt.Printf("warn: message sent but failed to persist outgoing copy: %v\n", err)
+		}
 	}
 
 	return true, fmt.Sprintf("Message sent to %s", recipient)
@@ -714,7 +761,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		fmt.Println("Received request to send message", req.Message, req.MediaPath)
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, req.Recipient, req.Message, req.MediaPath)
+		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, req.MediaPath)
 		fmt.Println("Message sent", success, message)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
