@@ -1367,3 +1367,12 @@ def set_group_photo(group_jid: str, image_path: str) -> Dict[str, Any]:
     La imagen DEBE ser un JPEG CUADRADO (ej. 640x640); WhatsApp rechaza no-cuadradas y
     whatsmeow no redimensiona (recortar antes, ej. macOS `sips -z 640 640 in.jpg --out sq.jpg`)."""
     return _bridge_post("set_group_photo", {"group_jid": group_jid, "image_path": image_path})
+
+
+# --- Lote A4: votar en encuestas ---
+
+def vote_poll(chat_jid: str, poll_message_id: str, options: List[str]) -> Tuple[bool, str]:
+    """Vota en una encuesta existente (el poll debe estar capturado en la DB). Los votos
+    entrantes de otros se descifran y guardan solos como mensajes 'poll_vote'."""
+    d = _bridge_post("poll_vote", {"chat_jid": chat_jid, "poll_message_id": poll_message_id, "options": options})
+    return d.get("success", False), d.get("message", "")

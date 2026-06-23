@@ -277,6 +277,11 @@ func extractTextContent(msg *waProto.Message) string {
 		return doc.GetCaption()
 	}
 
+	// Encuesta: el texto legible es la pregunta.
+	if poll := msg.GetPollCreationMessage(); poll != nil {
+		return poll.GetName()
+	}
+
 	return ""
 }
 
@@ -463,6 +468,13 @@ type GroupToggleRequest struct {
 type SetGroupPhotoRequest struct {
 	GroupJID  string `json:"group_jid"`
 	ImagePath string `json:"image_path"`
+}
+
+// PollVoteRequest vota en una encuesta existente (el poll debe estar capturado en la DB)
+type PollVoteRequest struct {
+	ChatJID       string   `json:"chat_jid"`
+	PollMessageID string   `json:"poll_message_id"`
+	Options       []string `json:"options"`
 }
 
 // botStatus mantiene el estado de conexion/sesion/ban del cliente para /api/status
@@ -966,6 +978,18 @@ func extractMediaInfo(msg *waProto.Message) (mediaType string, filename string, 
 	if stk := msg.GetStickerMessage(); stk != nil {
 		return "sticker", "sticker_" + time.Now().Format("20060102_150405") + ".webp",
 			stk.GetURL(), stk.GetDirectPath(), stk.GetMediaKey(), stk.GetFileSHA256(), stk.GetFileEncSHA256(), stk.GetFileLength()
+	}
+
+	// Encuesta: NO es media descargable, pero se persiste (media_type="poll"). Las opciones
+	// se guardan como JSON en el campo "filename" (no usado por polls) para poder mapear
+	// despues los votos entrantes (que llegan como hashes) a sus nombres legibles.
+	if poll := msg.GetPollCreationMessage(); poll != nil {
+		names := make([]string, 0, len(poll.GetOptions()))
+		for _, o := range poll.GetOptions() {
+			names = append(names, o.GetOptionName())
+		}
+		b, _ := json.Marshal(names)
+		return "poll", string(b), "", "", nil, nil, nil, 0
 	}
 
 	return "", "", "", "", nil, nil, nil, 0
@@ -1693,12 +1717,25 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			selectable = 1
 		}
 		poll := client.BuildPollCreation(req.Question, req.Options, selectable)
-		if _, err := client.SendMessage(context.Background(), chat, poll); err != nil {
+		resp, err := client.SendMessage(context.Background(), chat, poll)
+		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "poll sent"})
+		// Persistir el poll saliente (media_type="poll", opciones en filename JSON) para poder
+		// votarlo con vote_poll y mapear los votos entrantes a nombres legibles.
+		if messageStore != nil {
+			optsB, _ := json.Marshal(req.Options)
+			var senderUser string
+			if client.Store != nil && client.Store.ID != nil {
+				senderUser = client.Store.ID.User
+			}
+			_ = messageStore.TouchChat(chat.String(), resp.Timestamp)
+			_ = messageStore.StoreMessage(resp.ID, chat.String(), senderUser, req.Question, resp.Timestamp, true,
+				"poll", string(optsB), "", "", nil, nil, nil, 0)
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "poll sent", "message_id": resp.ID})
 	}))
 
 	// Handler: check if phone numbers are on WhatsApp
@@ -2541,6 +2578,70 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group photo updated", "picture_id": pictureID})
 	}))
 
+	// --- Lote A4: votar en encuestas ---
+
+	// Handler: vote in a poll
+	http.HandleFunc("/api/poll_vote", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req PollVoteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			return
+		}
+		if len(req.Options) == 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "at least one option required"})
+			return
+		}
+		// Reconstruir el MessageInfo del poll original desde la DB (debe haber sido capturado).
+		var senderRaw string
+		var fromMe bool
+		err = messageStore.db.QueryRow(
+			"SELECT sender, is_from_me FROM messages WHERE id = ? AND chat_jid = ? AND media_type = 'poll' LIMIT 1",
+			req.PollMessageID, req.ChatJID,
+		).Scan(&senderRaw, &fromMe)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "poll not found in DB (no fue capturado); no se puede votar"})
+			return
+		}
+		senderJID := jid
+		if fromMe && client.Store.ID != nil {
+			senderJID = client.Store.ID.ToNonAD()
+		} else if senderRaw != "" {
+			if strings.Contains(senderRaw, "@") {
+				if s, perr := types.ParseJID(senderRaw); perr == nil {
+					senderJID = s
+				}
+			} else if jid.Server == types.GroupServer {
+				senderJID = types.NewJID(senderRaw, types.HiddenUserServer)
+			}
+		}
+		pollInfo := &types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: jid, Sender: senderJID, IsFromMe: fromMe},
+			ID:            types.MessageID(req.PollMessageID),
+		}
+		voteMsg, err := client.BuildPollVote(context.Background(), pollInfo, req.Options)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		if _, err := client.SendMessage(context.Background(), jid, voteMsg); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "poll vote sent", "options": req.Options})
+	}))
+
 	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).
 	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
 	srv := &http.Server{
@@ -2617,6 +2718,10 @@ func main() {
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
 		case *events.Message:
+			// Voto de encuesta entrante: descifrar y registrar (goroutine; no bloquea el dispatch).
+			if v.Message.GetPollUpdateMessage() != nil {
+				go handlePollVote(client, messageStore, v, logger)
+			}
 			// Process regular messages
 			handleMessage(client, messageStore, v, logger)
 
@@ -2808,6 +2913,52 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 	}
 
 	return name
+}
+
+// handlePollVote descifra un voto de encuesta entrante y lo registra. Los votos llegan como
+// hashes SHA256 de las opciones; se mapean a los nombres legibles usando las opciones del poll
+// original (guardadas en la DB con el poll, en el campo filename como JSON). Se persiste el voto
+// como un mensaje "poll_vote" para que sea consultable via list_messages.
+func handlePollVote(client *whatsmeow.Client, store *MessageStore, evt *events.Message, logger waLog.Logger) {
+	vote, err := client.DecryptPollVote(context.Background(), evt)
+	if err != nil {
+		logger.Warnf("poll vote: no se pudo descifrar: %v", err)
+		return
+	}
+	pollID := evt.Message.GetPollUpdateMessage().GetPollCreationMessageKey().GetID()
+	var optsJSON string
+	_ = store.db.QueryRow("SELECT filename FROM messages WHERE id = ? AND media_type = 'poll' LIMIT 1", pollID).Scan(&optsJSON)
+	var pollOptions []string
+	_ = json.Unmarshal([]byte(optsJSON), &pollOptions)
+
+	selected := vote.GetSelectedOptions()
+	var voted []string
+	for _, name := range pollOptions {
+		h := whatsmeow.HashPollOptions([]string{name})
+		if len(h) == 0 {
+			continue
+		}
+		for _, sel := range selected {
+			if bytes.Equal(h[0], sel) {
+				voted = append(voted, name)
+			}
+		}
+	}
+	label := strings.Join(voted, ", ")
+	if label == "" {
+		label = fmt.Sprintf("(%d opcion(es); poll original no capturado, no se pudo mapear)", len(selected))
+	}
+	logger.Infof("🗳️ Voto de %s en poll %s: %s", evt.Info.Sender.String(), pollID, label)
+
+	// Persistir para que sea consultable via list_messages (TouchChat asegura el FK del chat).
+	if store != nil {
+		_ = store.TouchChat(evt.Info.Chat.String(), evt.Info.Timestamp)
+		if err := store.StoreMessage(evt.Info.ID, evt.Info.Chat.String(), evt.Info.Sender.User,
+			"🗳️ votó: "+label, evt.Info.Timestamp, evt.Info.IsFromMe,
+			"poll_vote", "", "", "", nil, nil, nil, 0); err != nil {
+			logger.Warnf("poll vote: no se pudo persistir: %v", err)
+		}
+	}
 }
 
 // Handle history sync events

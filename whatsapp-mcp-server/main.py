@@ -51,7 +51,8 @@ from whatsapp import (
     set_group_description as whatsapp_set_group_description,
     set_group_announce as whatsapp_set_group_announce,
     set_group_locked as whatsapp_set_group_locked,
-    set_group_photo as whatsapp_set_group_photo
+    set_group_photo as whatsapp_set_group_photo,
+    vote_poll as whatsapp_vote_poll
 )
 
 # Initialize FastMCP server
@@ -722,6 +723,22 @@ def set_group_photo(group_jid: str, image_path: str) -> Dict[str, Any]:
         image_path: Absolute path to a SQUARE JPEG image
     """
     return whatsapp_set_group_photo(group_jid, image_path)
+
+@mcp.tool()
+def vote_poll(chat_jid: str, poll_message_id: str, options: List[str]) -> Dict[str, Any]:
+    """Vote in an existing WhatsApp poll.
+
+    The poll must have been captured (sent or received in a recent session). Incoming votes from
+    other people are decrypted and stored automatically as "poll_vote" messages — query them with
+    list_messages on that chat.
+
+    Args:
+        chat_jid: The chat/group JID where the poll is
+        poll_message_id: The message ID of the poll to vote on
+        options: List of option names to select (exact text of the poll options)
+    """
+    success, status_message = whatsapp_vote_poll(chat_jid, poll_message_id, options)
+    return {"success": success, "message": status_message}
 
 if __name__ == "__main__":
     # Initialize and run the server
