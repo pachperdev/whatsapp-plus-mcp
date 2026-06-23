@@ -187,6 +187,31 @@ def refresh_contacts() -> dict:
     return {"success": True, "contacts_loaded": len(names)}
 
 
+def _sibling_chat_jids(chat_jid: str) -> List[str]:
+    """Todos los jids del mismo contacto (lid + numero) para unir su conversacion.
+
+    Un contacto tiene mensajes bajo su @lid (entrantes en vivo) y bajo
+    numero@s.whatsapp.net (salientes/history). list_messages debe traer ambos.
+    Grupos/broadcast devuelven solo su propio jid.
+    """
+    jids = {chat_jid}
+    suffix = chat_jid.split('@', 1)[1] if '@' in chat_jid else ''
+    if suffix.startswith('g.us') or suffix.startswith('broadcast'):
+        return list(jids)
+    _, lid_to_pn = _get_contact_index()
+    local = _normalize_phone(chat_jid)
+    if suffix.startswith('lid'):
+        pn = lid_to_pn.get(local)
+        if pn:
+            jids.add(f"{pn}@s.whatsapp.net")
+    else:
+        pn = local
+        for lid, mapped_pn in lid_to_pn.items():
+            if mapped_pn == pn:
+                jids.add(f"{lid}@lid")
+    return list(jids)
+
+
 def get_sender_name(sender_jid: str) -> str:
     # 1) Nombre real desde la libreta de WhatsApp (lid -> numero -> nombre)
     name = resolve_contact_name(sender_jid)
@@ -310,8 +335,12 @@ def list_messages(
             params.append(sender_phone_number)
             
         if chat_jid:
-            where_clauses.append("messages.chat_jid = ?")
-            params.append(chat_jid)
+            # Unir la conversacion completa: un contacto tiene mensajes bajo su @lid
+            # (entrantes en vivo) y bajo numero@s.whatsapp.net (salientes/history).
+            siblings = _sibling_chat_jids(chat_jid)
+            placeholders = ",".join(["?"] * len(siblings))
+            where_clauses.append(f"messages.chat_jid IN ({placeholders})")
+            params.extend(siblings)
             
         if query:
             where_clauses.append("LOWER(messages.content) LIKE LOWER(?)")
@@ -553,11 +582,16 @@ def search_contacts(query: str) -> List[Contact]:
     complementa con los chats conocidos, resolviendo nombres reales.
     """
     search = f"%{query.lower().strip()}%"
-    results = {}  # numero_telefono -> Contact (evita duplicados)
+    names_idx, lid_to_pn = _get_contact_index()
+    results = {}  # numero_telefono CANONICO -> Contact (unifica lid + numero)
+
+    def _canon_pn(jid_or_local: str) -> str:
+        pn = _normalize_phone(jid_or_local)
+        return lid_to_pn.get(pn, pn)  # si es un lid, mapearlo a su numero real
 
     # 1) Libreta real de WhatsApp (la fuente con todos los contactos guardados)
     try:
-        conn = sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True, timeout=10)
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -570,9 +604,10 @@ def search_contacts(query: str) -> List[Contact]:
             (search, search, search, search, search),
         )
         for their_jid, first_name, full_name, push_name, business_name in cursor.fetchall():
-            pn = _normalize_phone(their_jid)
-            name = (full_name or first_name or push_name or business_name or "").strip()
+            pn = _canon_pn(their_jid)
             if pn and pn not in results:
+                # preferir el nombre canonico de la libreta (por numero)
+                name = names_idx.get(pn) or (full_name or first_name or push_name or business_name or "").strip()
                 results[pn] = Contact(
                     phone_number=pn,
                     name=name or None,
@@ -584,7 +619,7 @@ def search_contacts(query: str) -> List[Contact]:
 
     # 2) Complementar con chats (cubre nombres que solo existen ahi)
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -595,9 +630,9 @@ def search_contacts(query: str) -> List[Contact]:
             (search, search),
         )
         for jid, name in cursor.fetchall():
-            pn = _normalize_phone(jid)
+            pn = _canon_pn(jid)
             if pn not in results:
-                resolved = resolve_contact_name(jid) or name
+                resolved = names_idx.get(pn) or resolve_contact_name(jid) or name
                 results[pn] = Contact(phone_number=pn, name=resolved, jid=jid)
         conn.close()
     except sqlite3.Error as e:
