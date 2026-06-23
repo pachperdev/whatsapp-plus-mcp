@@ -157,12 +157,12 @@ implementar **Tier A + Tier B paso a paso** (Tier A primero). Tier C NO por ahor
 - 🔲 `set_group_locked` ← `SetGroupLocked(ctx, jid, bool)` (solo admins editan info).
 - 🔲 `set_group_photo` ← `SetGroupPhoto(ctx, jid, avatar []byte)` (recibe path de imagen).
 
-**🟡 LOTE A3 — Solicitudes de ingreso a grupos (requiere coordinación)**
+**🟡 LOTE A3 — Solicitudes de ingreso a grupos — ✅ COMPLETO (commit `28e1e4e`, validado en vivo: approve+reject)**
 - 🔲 `set_group_join_approval` ← `SetGroupJoinApprovalMode(ctx, jid, bool)`.
 - 🔲 `get_group_join_requests` ← `GetGroupRequestParticipants(ctx, jid)`.
 - 🔲 `review_group_join_request` ← `UpdateGroupRequestParticipants(ctx, jid, jids, "approve"|"reject")` (`ParticipantChangeApprove/Reject`).
 
-**🟡 LOTE A4 — Encuestas: votar + leer votos**
+**🟡 LOTE A4 — Encuestas: votar + leer votos — ✅ COMPLETO (commit `adeab1b`, validado vía MCP)**
 - 🔲 `vote_poll` ← `BuildPollVote(ctx, pollInfo *types.MessageInfo, optionNames)` → `SendMessage` (reconstruir el `MessageInfo` del poll desde la DB).
 - 🔲 captura de votos entrantes ← `DecryptPollVote(ctx, *events.Message)` en el handler.
 
