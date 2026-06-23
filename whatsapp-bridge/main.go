@@ -272,6 +272,22 @@ type PollRequest struct {
 	SelectableCount int      `json:"selectable_count,omitempty"`
 }
 
+// CheckWhatsAppRequest checks if phone numbers are registered on WhatsApp
+type CheckWhatsAppRequest struct {
+	Phones []string `json:"phones"`
+}
+
+// ProfilePictureRequest gets a profile picture URL
+type ProfilePictureRequest struct {
+	JID     string `json:"jid"`
+	Preview bool   `json:"preview,omitempty"`
+}
+
+// UserInfoRequest gets user info (status/about, business flag)
+type UserInfoRequest struct {
+	JIDs []string `json:"jids"`
+}
+
 // Function to send a WhatsApp message
 func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string) (bool, string) {
 	if !client.IsConnected() {
@@ -1160,6 +1176,96 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "poll sent"})
+	}))
+
+	// Handler: check if phone numbers are on WhatsApp
+	http.HandleFunc("/api/check_whatsapp", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req CheckWhatsAppRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		resp, err := client.IsOnWhatsApp(context.Background(), req.Phones)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		out := make([]map[string]interface{}, 0, len(resp))
+		for _, item := range resp {
+			out = append(out, map[string]interface{}{
+				"query":          item.Query,
+				"jid":            item.JID.String(),
+				"is_on_whatsapp": item.IsIn,
+				"is_business":    item.VerifiedName != nil,
+			})
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "results": out})
+	}))
+
+	// Handler: get a profile picture URL
+	http.HandleFunc("/api/profile_picture", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req ProfilePictureRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.JID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid jid"})
+			return
+		}
+		info, err := client.GetProfilePictureInfo(context.Background(), jid, &whatsmeow.GetProfilePictureParams{Preview: req.Preview})
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		if info == nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "has_picture": false})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true, "has_picture": true,
+			"url": info.URL, "id": info.ID, "type": info.Type,
+		})
+	}))
+
+	// Handler: get user info (status/about, business flag)
+	http.HandleFunc("/api/user_info", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req UserInfoRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jids := make([]types.JID, 0, len(req.JIDs))
+		for _, j := range req.JIDs {
+			if jid, perr := types.ParseJID(j); perr == nil {
+				jids = append(jids, jid)
+			}
+		}
+		info, err := client.GetUserInfo(context.Background(), jids)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		out := make(map[string]interface{})
+		for jid, ui := range info {
+			out[jid.String()] = map[string]interface{}{
+				"status":      ui.Status,
+				"picture_id":  ui.PictureID,
+				"is_business": ui.VerifiedName != nil,
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "users": out})
 	}))
 
 	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).

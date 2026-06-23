@@ -1106,3 +1106,65 @@ def send_poll(chat_jid: str, question: str, options: List[str], selectable_count
     except (requests.RequestException, ValueError) as e:
         logger.error(f"send_poll error: {e}")
         return False, str(e)
+
+
+def list_all_contacts(limit: int = 0) -> List[Contact]:
+    """Lista toda la libreta de contactos de WhatsApp (unificada por numero)."""
+    names_idx, lid_to_pn = _get_contact_index()
+    seen = {}
+    for pn, name in names_idx.items():
+        canon = lid_to_pn.get(pn, pn)  # unificar lid -> numero
+        if canon not in seen:
+            seen[canon] = names_idx.get(canon) or name
+    result = [Contact(phone_number=pn, name=name, jid=f"{pn}@s.whatsapp.net")
+              for pn, name in seen.items()]
+    result.sort(key=lambda c: (c.name or "").lower())
+    if limit and limit > 0:
+        result = result[:limit]
+    return result
+
+
+def check_whatsapp(phones: List[str]) -> List[Dict[str, Any]]:
+    """Verifica si numeros estan en WhatsApp (formato internacional con +)."""
+    try:
+        resp = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/check_whatsapp",
+            json={"phones": phones},
+            headers={"X-Auth-Token": _bridge_token()},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        return data.get("results", []) if data.get("success") else []
+    except (requests.RequestException, ValueError) as e:
+        logger.error(f"check_whatsapp error: {e}")
+        return []
+
+
+def get_profile_picture(jid: str, preview: bool = False) -> Dict[str, Any]:
+    """Obtiene la URL de la foto de perfil de un usuario o grupo."""
+    try:
+        resp = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/profile_picture",
+            json={"jid": jid, "preview": preview},
+            headers={"X-Auth-Token": _bridge_token()},
+            timeout=REQUEST_TIMEOUT,
+        )
+        return resp.json()
+    except (requests.RequestException, ValueError) as e:
+        logger.error(f"get_profile_picture error: {e}")
+        return {"success": False, "message": str(e)}
+
+
+def get_user_info(jids: List[str]) -> Dict[str, Any]:
+    """Obtiene info (status/about, flag business) de uno o mas usuarios."""
+    try:
+        resp = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/user_info",
+            json={"jids": jids},
+            headers={"X-Auth-Token": _bridge_token()},
+            timeout=REQUEST_TIMEOUT,
+        )
+        return resp.json()
+    except (requests.RequestException, ValueError) as e:
+        logger.error(f"get_user_info error: {e}")
+        return {"success": False, "message": str(e)}

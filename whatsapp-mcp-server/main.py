@@ -20,7 +20,11 @@ from whatsapp import (
     edit_message as whatsapp_edit_message,
     delete_message as whatsapp_delete_message,
     send_typing as whatsapp_send_typing,
-    send_poll as whatsapp_send_poll
+    send_poll as whatsapp_send_poll,
+    list_all_contacts as whatsapp_list_all_contacts,
+    check_whatsapp as whatsapp_check_whatsapp,
+    get_profile_picture as whatsapp_get_profile_picture,
+    get_user_info as whatsapp_get_user_info
 )
 
 # Initialize FastMCP server
@@ -342,6 +346,44 @@ def send_poll(chat_jid: str, question: str, options: List[str], selectable_count
     """
     success, status_message = whatsapp_send_poll(chat_jid, question, options, selectable_count)
     return {"success": success, "message": status_message}
+
+@mcp.tool()
+def list_all_contacts(limit: int = 0) -> List[Dict[str, Any]]:
+    """List all contacts from your WhatsApp address book (unified by number, sorted by name).
+
+    Args:
+        limit: Max contacts to return (0 = all). The address book can be large; set a limit if you only need a sample.
+    """
+    return whatsapp_list_all_contacts(limit)
+
+@mcp.tool()
+def check_whatsapp(phones: List[str]) -> List[Dict[str, Any]]:
+    """Check whether phone numbers are registered on WhatsApp.
+
+    Args:
+        phones: List of phone numbers in international format (e.g. "+573001234567")
+    Returns: per number — query, jid, is_on_whatsapp, is_business.
+    """
+    return whatsapp_check_whatsapp(phones)
+
+@mcp.tool()
+def get_profile_picture(jid: str, preview: bool = False) -> Dict[str, Any]:
+    """Get the profile-picture URL of a user or group.
+
+    Args:
+        jid: The user/group JID
+        preview: True for a small thumbnail, False for full resolution
+    """
+    return whatsapp_get_profile_picture(jid, preview)
+
+@mcp.tool()
+def get_user_info(jids: List[str]) -> Dict[str, Any]:
+    """Get info (status/"about" text, business flag) for one or more users.
+
+    Args:
+        jids: List of user JIDs
+    """
+    return whatsapp_get_user_info(jids)
 
 if __name__ == "__main__":
     # Initialize and run the server
