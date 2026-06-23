@@ -83,6 +83,7 @@ Client son **wrappers de baja complejidad** (handler REST en el bridge + tool Py
 | `set_disappearing_messages` | `SetDisappearingTimer` |
 
 **Tier 3 — requieren event handler nuevo o estado en SQLite (mayor esfuerzo):**
+- 🔴 **Captura de mensajes NO-texto** (detectado 2026-06-23): `handleMessage`/`extractMediaInfo` solo guardan image/video/audio/document. **Se descartan: stickers, ubicación, contactos (vCard), polls, botones/listas, mensajes de sistema** → no quedan en la DB (no se pueden listar, citar con `reply`, ni descargar). Ampliar `extractMediaInfo` + `extractTextContent` para soportar `StickerMessage`, `LocationMessage`, `LiveLocationMessage`, `ContactMessage`/`ContactsArrayMessage`, `PollCreationMessage`. Además, `buildQuotedContext` solo cita texto (`Conversation`); citar un sticker/imagen requeriría reconstruir ese `QuotedMessage`.
 - `get_unread_chats` — procesar `events.Receipt` y trackear read-state en SQLite (no hay "unread count" directo).
 - Capturar **edits/revokes entrantes** (`events.Message.IsEdit`, `ProtocolMessage` REVOKE) → reflejar en la DB.
 - Presencia de terceros (`SubscribePresence` + handler `events.Presence` last-seen/online).
