@@ -33,6 +33,7 @@ Resueltos en esta tanda de mantenimiento — todos commiteados en `main` y valid
 | **B** `rand.Seed`→RNG local, `min()` builtin | `6d46db2` |
 | **B** temp `.ogg` cleanup + `makedirs(exist_ok=True)` | `d9c37d3` |
 | `list_chats(query)` busca por nombre resuelto (no lid crudo) | `cb23d93` |
+| `search_contacts` deduplica contacto y `list_messages` une la conversación (lid+número) | `982d8f4` |
 
 ### Pendiente (no crítico, bajo impacto)
 - **M2** batch transaction en history-sync (inserts uno por uno). **Ya mitigado** por T1 (goroutine) + T2 (WAL): no bloquea; es optimización, no se hizo por riesgo/beneficio.
