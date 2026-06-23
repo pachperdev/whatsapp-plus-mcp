@@ -336,6 +336,12 @@ type StarRequest struct {
 	Starred   bool   `json:"starred"`
 }
 
+// HistoryRequest pide mas historia (mensajes anteriores al mas viejo que tenemos) de un chat
+type HistoryRequest struct {
+	ChatJID string `json:"chat_jid"`
+	Count   int    `json:"count"`
+}
+
 // lastMsgKey arma el MessageKey + timestamp del ultimo mensaje de un chat,
 // requerido por BuildArchive y BuildMarkChatAsRead.
 func lastMsgKey(store *MessageStore, chatJID types.JID) (*waCommon.MessageKey, time.Time) {
@@ -1812,6 +1818,33 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		})
 	}))
 
+	// Handler: request more history for a chat (on-demand history sync)
+	http.HandleFunc("/api/request_history", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req HistoryRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			return
+		}
+		count := req.Count
+		if count <= 0 {
+			count = 50
+		}
+		if err := requestMoreHistory(client, messageStore, jid, count); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "history requested (best-effort); si el telefono primario esta online y conserva mensajes anteriores, llegan async via history sync y quedan en la DB"})
+	}))
+
 	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).
 	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
 	srv := &http.Server{
@@ -2205,40 +2238,45 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 	fmt.Printf("History sync complete. Stored %d messages.\n", syncedCount)
 }
 
-// Request history sync from the server
-func requestHistorySync(client *whatsmeow.Client) {
-	if client == nil {
-		fmt.Println("Client is not initialized. Cannot request history sync.")
-		return
+// requestMoreHistory pide al servidor los mensajes ANTERIORES al mas viejo que tenemos
+// de un chat (el "cargar mensajes anteriores" de WhatsApp). El ancla es el mensaje mas
+// antiguo en la DB para ese chat; sin ese ancla no se puede pedir (BuildHistorySyncRequest
+// dereferencia el MessageInfo sin chequear nil). Los resultados llegan de forma asincrona
+// via un evento HistorySync ON_DEMAND que handleHistorySync persiste.
+func requestMoreHistory(client *whatsmeow.Client, store *MessageStore, chatJID types.JID, count int) error {
+	if client == nil || !client.IsConnected() {
+		return fmt.Errorf("client not connected")
 	}
-
-	if !client.IsConnected() {
-		fmt.Println("Client is not connected. Please ensure you are connected to WhatsApp first.")
-		return
-	}
-
 	if client.Store.ID == nil {
-		fmt.Println("Client is not logged in. Please scan the QR code first.")
-		return
+		return fmt.Errorf("client not logged in")
 	}
-
-	// Build and send a history sync request
-	historyMsg := client.BuildHistorySyncRequest(nil, 100)
-	if historyMsg == nil {
-		fmt.Println("Failed to build history sync request.")
-		return
-	}
-
-	_, err := client.SendMessage(context.Background(), types.JID{
-		Server: "s.whatsapp.net",
-		User:   "status",
-	}, historyMsg)
-
+	var id string
+	var isFromMe bool
+	var ts time.Time
+	err := store.db.QueryRow(
+		"SELECT id, is_from_me, timestamp FROM messages WHERE chat_jid = ? ORDER BY timestamp ASC LIMIT 1",
+		chatJID.String(),
+	).Scan(&id, &isFromMe, &ts)
 	if err != nil {
-		fmt.Printf("Failed to request history sync: %v\n", err)
-	} else {
-		fmt.Println("History sync requested. Waiting for server response...")
+		return fmt.Errorf("no hay mensajes previos de %s para anclar la solicitud", chatJID)
 	}
+	info := &types.MessageInfo{
+		MessageSource: types.MessageSource{Chat: chatJID, IsFromMe: isFromMe},
+		ID:            id,
+		Timestamp:     ts,
+	}
+	historyMsg := client.BuildHistorySyncRequest(info, count)
+	if historyMsg == nil {
+		return fmt.Errorf("failed to build history sync request")
+	}
+	// El history-sync on-demand es un PEER message (ProtocolMessage a tus propios
+	// devices), por eso va a tu propio JID con Peer:true. Enviarlo como mensaje normal
+	// a "status@s.whatsapp.net" dispara un usync (LID cache) que se cuelga (info query timed out).
+	ownJID := client.Store.ID.ToNonAD()
+	if _, err := client.SendMessage(context.Background(), ownJID, historyMsg, whatsmeow.SendRequestExtra{Peer: true}); err != nil {
+		return fmt.Errorf("failed to request history: %w", err)
+	}
+	return nil
 }
 
 // analyzeOggOpus tries to extract duration and generate a simple waveform from an Ogg Opus file

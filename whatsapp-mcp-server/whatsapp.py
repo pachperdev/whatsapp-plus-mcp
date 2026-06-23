@@ -1269,3 +1269,11 @@ def star_message(chat_jid: str, message_id: str, starred: bool = True) -> Tuple[
 def get_chat_settings(chat_jid: str) -> Dict[str, Any]:
     """Lee el estado de un chat: muted, muted_until, pinned, archived."""
     return _bridge_post("chat_settings", {"chat_jid": chat_jid})
+
+
+def request_more_history(chat_jid: str, count: int = 50) -> Tuple[bool, str]:
+    """Pide mensajes anteriores de un chat (best-effort). WhatsApp es E2E: el server no guarda
+    historial, vive en el telefono primario. Si esta online y los tiene, llegan async via
+    history sync y quedan en la DB. Es normal que no llegue nada (telefono offline / sin mas)."""
+    d = _bridge_post("request_history", {"chat_jid": chat_jid, "count": count})
+    return d.get("success", False), d.get("message", "")

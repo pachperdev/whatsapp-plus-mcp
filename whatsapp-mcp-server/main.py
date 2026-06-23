@@ -38,7 +38,8 @@ from whatsapp import (
     archive_chat as whatsapp_archive_chat,
     mark_chat as whatsapp_mark_chat,
     star_message as whatsapp_star_message,
-    get_chat_settings as whatsapp_get_chat_settings
+    get_chat_settings as whatsapp_get_chat_settings,
+    request_more_history as whatsapp_request_more_history
 )
 
 # Initialize FastMCP server
@@ -546,6 +547,26 @@ def get_chat_settings(chat_jid: str) -> Dict[str, Any]:
         chat_jid: The chat/group JID
     """
     return whatsapp_get_chat_settings(chat_jid)
+
+@mcp.tool()
+def request_more_history(chat_jid: str, count: int = 50) -> Dict[str, Any]:
+    """Request older messages for a chat (like "load earlier messages"). BEST-EFFORT.
+
+    WhatsApp is end-to-end encrypted: the server does NOT store message history; it lives on
+    your primary phone. This sends an on-demand history-sync request (a peer message to your own
+    account). The older messages, IF your primary phone is online and still holds them, arrive
+    asynchronously and are stored in the local DB — query them afterwards with list_messages.
+
+    It is normal for nothing to arrive (phone offline, or it no longer has messages before the
+    oldest one already synced). Requires at least one existing message in the chat to anchor the
+    request, and best to keep count <= 50.
+
+    Args:
+        chat_jid: The chat/group JID to fetch older history for
+        count: How many older messages to request (default/recommended max 50)
+    """
+    success, status_message = whatsapp_request_more_history(chat_jid, count)
+    return {"success": success, "message": status_message}
 
 if __name__ == "__main__":
     # Initialize and run the server
