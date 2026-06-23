@@ -8,6 +8,8 @@ import json
 import audio
 
 MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
+# whatsmeow guarda la libreta de contactos y el mapeo lid<->numero aqui
+WHATSAPP_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'whatsapp.db')
 WHATSAPP_API_BASE_URL = "http://localhost:8080/api"
 
 @dataclass
@@ -47,43 +49,95 @@ class MessageContext:
     before: List[Message]
     after: List[Message]
 
+def _normalize_phone(jid_or_local: str) -> str:
+    """Extrae la parte numerica/local de un JID, quitando sufijo (@...) y device id (:NN)."""
+    if not jid_or_local:
+        return ""
+    local = str(jid_or_local).split('@')[0]
+    return local.split(':')[0]
+
+
+def _load_contact_index():
+    """Carga indices de nombres desde la libreta de whatsmeow (whatsapp.db).
+
+    Devuelve (names, lid_to_pn):
+      names:     { numero_telefono: mejor_nombre_para_mostrar }
+      lid_to_pn: { lid: numero_telefono }
+    """
+    names = {}
+    lid_to_pn = {}
+    try:
+        conn = sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True)
+        cursor = conn.cursor()
+        try:
+            for their_jid, first_name, full_name, push_name, business_name in cursor.execute(
+                "SELECT their_jid, first_name, full_name, push_name, business_name FROM whatsmeow_contacts"
+            ):
+                pn = _normalize_phone(their_jid)
+                # Preferimos como esta guardado en la libreta del usuario, luego push name
+                name = (full_name or first_name or push_name or business_name or "").strip()
+                if pn and name:
+                    names[pn] = name
+        except sqlite3.Error:
+            pass
+        try:
+            for lid, pn in cursor.execute("SELECT lid, pn FROM whatsmeow_lid_map"):
+                lid_to_pn[_normalize_phone(str(lid))] = _normalize_phone(str(pn))
+        except sqlite3.Error:
+            pass
+        conn.close()
+    except sqlite3.Error as e:
+        print(f"Database error loading contacts: {e}")
+    return names, lid_to_pn
+
+
+_CONTACT_INDEX = None
+
+
+def _get_contact_index(refresh: bool = False):
+    """Cache en memoria del indice de contactos (se refresca por proceso)."""
+    global _CONTACT_INDEX
+    if _CONTACT_INDEX is None or refresh:
+        _CONTACT_INDEX = _load_contact_index()
+    return _CONTACT_INDEX
+
+
+def resolve_contact_name(jid: str) -> Optional[str]:
+    """Resuelve el nombre real de un contacto cruzando lid -> numero -> nombre.
+
+    Devuelve None si no hay nombre en la libreta (p.ej. grupos o desconocidos).
+    """
+    if not jid:
+        return None
+    suffix = jid.split('@', 1)[1] if '@' in jid else ''
+    if suffix.startswith('g.us'):
+        return None  # los grupos usan su propio nombre, no la libreta
+    names, lid_to_pn = _get_contact_index()
+    local = _normalize_phone(jid)
+    pn = lid_to_pn.get(local) if suffix.startswith('lid') else local
+    if pn and pn in names:
+        return names[pn]
+    return None
+
+
 def get_sender_name(sender_jid: str) -> str:
+    # 1) Nombre real desde la libreta de WhatsApp (lid -> numero -> nombre)
+    name = resolve_contact_name(sender_jid)
+    if name:
+        return name
+    # 2) Fallback: nombre guardado en la tabla chats de messages.db
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
-        
-        # First try matching by exact JID
-        cursor.execute("""
-            SELECT name
-            FROM chats
-            WHERE jid = ?
-            LIMIT 1
-        """, (sender_jid,))
-        
+        cursor.execute("SELECT name FROM chats WHERE jid = ? LIMIT 1", (sender_jid,))
         result = cursor.fetchone()
-        
-        # If no result, try looking for the number within JIDs
         if not result:
-            # Extract the phone number part if it's a JID
-            if '@' in sender_jid:
-                phone_part = sender_jid.split('@')[0]
-            else:
-                phone_part = sender_jid
-                
-            cursor.execute("""
-                SELECT name
-                FROM chats
-                WHERE jid LIKE ?
-                LIMIT 1
-            """, (f"%{phone_part}%",))
-            
+            phone_part = sender_jid.split('@')[0] if '@' in sender_jid else sender_jid
+            cursor.execute("SELECT name FROM chats WHERE jid LIKE ? LIMIT 1", (f"%{phone_part}%",))
             result = cursor.fetchone()
-        
         if result and result[0]:
             return result[0]
-        else:
-            return sender_jid
-        
+        return sender_jid
     except sqlite3.Error as e:
         print(f"Database error while getting sender name: {e}")
         return sender_jid
@@ -370,9 +424,10 @@ def list_chats(
         
         result = []
         for chat_data in chats:
+            resolved = resolve_contact_name(chat_data[0])
             chat = Chat(
                 jid=chat_data[0],
-                name=chat_data[1],
+                name=resolved or chat_data[1],
                 last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
                 last_message=chat_data[3],
                 last_sender=chat_data[4],
@@ -391,45 +446,63 @@ def list_chats(
 
 
 def search_contacts(query: str) -> List[Contact]:
-    """Search contacts by name or phone number."""
+    """Search contacts by name or phone number.
+
+    Busca primero en la libreta real de WhatsApp (whatsmeow_contacts) y luego
+    complementa con los chats conocidos, resolviendo nombres reales.
+    """
+    search = f"%{query.lower().strip()}%"
+    results = {}  # numero_telefono -> Contact (evita duplicados)
+
+    # 1) Libreta real de WhatsApp (la fuente con todos los contactos guardados)
+    try:
+        conn = sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT their_jid, first_name, full_name, push_name, business_name
+            FROM whatsmeow_contacts
+            WHERE LOWER(full_name) LIKE ? OR LOWER(first_name) LIKE ?
+               OR LOWER(push_name) LIKE ? OR LOWER(business_name) LIKE ?
+               OR their_jid LIKE ?
+            """,
+            (search, search, search, search, search),
+        )
+        for their_jid, first_name, full_name, push_name, business_name in cursor.fetchall():
+            pn = _normalize_phone(their_jid)
+            name = (full_name or first_name or push_name or business_name or "").strip()
+            if pn and pn not in results:
+                results[pn] = Contact(
+                    phone_number=pn,
+                    name=name or None,
+                    jid=f"{pn}@s.whatsapp.net",
+                )
+        conn.close()
+    except sqlite3.Error as e:
+        print(f"Database error searching contacts: {e}")
+
+    # 2) Complementar con chats (cubre nombres que solo existen ahi)
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
-        
-        # Split query into characters to support partial matching
-        search_pattern = '%' +query + '%'
-        
-        cursor.execute("""
-            SELECT DISTINCT 
-                jid,
-                name
-            FROM chats
-            WHERE 
-                (LOWER(name) LIKE LOWER(?) OR LOWER(jid) LIKE LOWER(?))
-                AND jid NOT LIKE '%@g.us'
-            ORDER BY name, jid
+        cursor.execute(
+            """
+            SELECT DISTINCT jid, name FROM chats
+            WHERE (LOWER(name) LIKE ? OR LOWER(jid) LIKE ?) AND jid NOT LIKE '%@g.us'
             LIMIT 50
-        """, (search_pattern, search_pattern))
-        
-        contacts = cursor.fetchall()
-        
-        result = []
-        for contact_data in contacts:
-            contact = Contact(
-                phone_number=contact_data[0].split('@')[0],
-                name=contact_data[1],
-                jid=contact_data[0]
-            )
-            result.append(contact)
-            
-        return result
-        
+            """,
+            (search, search),
+        )
+        for jid, name in cursor.fetchall():
+            pn = _normalize_phone(jid)
+            if pn not in results:
+                resolved = resolve_contact_name(jid) or name
+                results[pn] = Contact(phone_number=pn, name=resolved, jid=jid)
+        conn.close()
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        return []
-    finally:
-        if 'conn' in locals():
-            conn.close()
+        print(f"Database error searching chats: {e}")
+
+    return list(results.values())[:50]
 
 
 def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
@@ -463,9 +536,10 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
         
         result = []
         for chat_data in chats:
+            resolved = resolve_contact_name(chat_data[0])
             chat = Chat(
                 jid=chat_data[0],
-                name=chat_data[1],
+                name=resolved or chat_data[1],
                 last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
                 last_message=chat_data[3],
                 last_sender=chat_data[4],
