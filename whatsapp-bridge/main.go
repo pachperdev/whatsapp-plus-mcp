@@ -325,17 +325,29 @@ type BlockRequest struct {
 // uno mismo si el mensaje es propio, o el chat (contacto) si fue recibido.
 // Nota: en grupos el autor real puede no ser el chat_jid (limitacion conocida).
 func buildQuotedContext(store *MessageStore, client *whatsmeow.Client, quotedID string) *waProto.ContextInfo {
-	var senderChatJID, content string
+	var chatJID, sender, content string
 	var isFromMe bool
 	err := store.db.QueryRow(
-		"SELECT chat_jid, content, is_from_me FROM messages WHERE id = ? LIMIT 1", quotedID,
-	).Scan(&senderChatJID, &content, &isFromMe)
+		"SELECT chat_jid, sender, content, is_from_me FROM messages WHERE id = ? LIMIT 1", quotedID,
+	).Scan(&chatJID, &sender, &content, &isFromMe)
 	if err != nil {
 		return nil
 	}
-	participant := senderChatJID
-	if isFromMe && client.Store.ID != nil {
+	var participant string
+	switch {
+	case isFromMe && client.Store.ID != nil:
 		participant = client.Store.ID.ToNonAD().String()
+	case strings.HasSuffix(chatJID, "@g.us"):
+		// En grupos el autor del citado es el participante (sender), no el grupo.
+		// Los participantes se referencian por LID en multidevice.
+		if strings.Contains(sender, "@") {
+			participant = sender
+		} else {
+			participant = sender + "@lid"
+		}
+	default:
+		// Chat directo: el autor es el contacto (el propio chat).
+		participant = chatJID
 	}
 	ctxInfo := &waProto.ContextInfo{
 		StanzaID:    proto.String(quotedID),
