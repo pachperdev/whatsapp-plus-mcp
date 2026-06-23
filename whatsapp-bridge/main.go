@@ -5,6 +5,7 @@ import (
 	crand "crypto/rand"
 	"crypto/subtle"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -23,8 +24,8 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/mdp/qrterminal"
+	_ "modernc.org/sqlite"
 
 	"bytes"
 
@@ -67,8 +68,8 @@ func NewMessageStore() (*MessageStore, error) {
 	//      sin bloquear, eliminando "database is locked" entre ambos procesos.
 	// busy_timeout: una escritura reintenta hasta 5s antes de fallar por lock.
 	// synchronous=NORMAL: seguro bajo WAL y mucho mas rapido que FULL.
-	db, err := sql.Open("sqlite3",
-		"file:store/messages.db?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL")
+	db, err := sql.Open("sqlite",
+		"file:store/messages.db?_pragma=foreign_keys(on)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
 	}
@@ -118,11 +119,24 @@ func (store *MessageStore) Close() error {
 	return store.db.Close()
 }
 
+// tsLayout es el formato de timestamp persistido en messages.db. Debe coincidir con el
+// que escribia mattn/go-sqlite3 y con lo que datetime.fromisoformat() del server Python
+// espera. modernc.org/sqlite por defecto serializa time.Time con time.Time.String()
+// ("2026-06-23 16:30:45 -0500 COT"), lo que romperia el ORDER BY (columna TEXT) y el
+// parseo en Python. dbTime fuerza el formato canonico, independiente del driver.
+const tsLayout = "2006-01-02 15:04:05-07:00"
+
+type dbTime time.Time
+
+func (t dbTime) Value() (driver.Value, error) {
+	return time.Time(t).Local().Format(tsLayout), nil
+}
+
 // Store a chat in the database
 func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time) error {
 	_, err := store.db.Exec(
 		"INSERT OR REPLACE INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
-		jid, name, lastMessageTime,
+		jid, name, dbTime(lastMessageTime),
 	)
 	return err
 }
@@ -134,7 +148,7 @@ func (store *MessageStore) TouchChat(jid string, lastMessageTime time.Time) erro
 	_, err := store.db.Exec(
 		`INSERT INTO chats (jid, name, last_message_time) VALUES (?, '', ?)
 		 ON CONFLICT(jid) DO UPDATE SET last_message_time=excluded.last_message_time`,
-		jid, lastMessageTime,
+		jid, dbTime(lastMessageTime),
 	)
 	return err
 }
@@ -151,7 +165,7 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 		`INSERT OR REPLACE INTO messages 
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length) 
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
+		id, chatJID, sender, content, dbTime(timestamp), isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 	)
 	return err
 }
@@ -268,7 +282,7 @@ type RevokeRequest struct {
 // TypingRequest sends a chat presence (typing / recording)
 type TypingRequest struct {
 	ChatJID string `json:"chat_jid"`
-	State   string `json:"state"` // composing | paused
+	State   string `json:"state"`           // composing | paused
 	Media   string `json:"media,omitempty"` // "" (text) | audio
 }
 
@@ -328,7 +342,7 @@ type BlockRequest struct {
 // ChatStateRequest toggles mute/pin/archive/read on a chat
 type ChatStateRequest struct {
 	ChatJID  string `json:"chat_jid"`
-	Enable   bool   `json:"enable"`                  // true = mute/pin/archive/read ; false = lo contrario
+	Enable   bool   `json:"enable"`                   // true = mute/pin/archive/read ; false = lo contrario
 	Duration int    `json:"duration_hours,omitempty"` // solo mute: 0 = indefinido
 }
 
@@ -2207,7 +2221,7 @@ func main() {
 		return
 	}
 
-	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(context.Background(), "sqlite", "file:store/whatsapp.db?_pragma=foreign_keys(on)&_pragma=busy_timeout(5000)", dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		return
