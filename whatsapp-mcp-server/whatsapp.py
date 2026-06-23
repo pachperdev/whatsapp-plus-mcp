@@ -1295,3 +1295,17 @@ def set_disappearing_messages(chat_jid: str, duration: str = "off") -> Tuple[boo
     """Setea el timer de mensajes temporales. duration: off|24h|7d|90d (presets de WhatsApp)."""
     d = _bridge_post("disappearing", {"chat_jid": chat_jid, "duration": duration})
     return d.get("success", False), d.get("message", "")
+
+
+def get_status() -> Dict[str, Any]:
+    """Estado de conexion/sesion/ban del bridge (connected, logged_in, temp_banned, needs_qr, ...)."""
+    try:
+        response = requests.get(f"{WHATSAPP_API_BASE_URL}/status",
+                                headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
+        if response.status_code == 200:
+            return response.json()
+        return {"success": False, "message": f"HTTP {response.status_code} - {response.text}"}
+    except requests.RequestException as e:
+        return {"success": False, "message": f"Request error: {str(e)}"}
+    except json.JSONDecodeError:
+        return {"success": False, "message": "Error parsing response"}

@@ -42,7 +42,8 @@ from whatsapp import (
     request_more_history as whatsapp_request_more_history,
     create_group as whatsapp_create_group,
     update_group_participants as whatsapp_update_group_participants,
-    set_disappearing_messages as whatsapp_set_disappearing_messages
+    set_disappearing_messages as whatsapp_set_disappearing_messages,
+    get_status as whatsapp_get_status
 )
 
 # Initialize FastMCP server
@@ -613,6 +614,16 @@ def set_disappearing_messages(chat_jid: str, duration: str = "off") -> Dict[str,
     """
     success, status_message = whatsapp_set_disappearing_messages(chat_jid, duration)
     return {"success": success, "message": status_message}
+
+@mcp.tool()
+def get_status() -> Dict[str, Any]:
+    """Get the WhatsApp bridge connection/session health.
+
+    Returns connection state, login state, and any temporary-ban / logout info: connected,
+    logged_in, temp_banned (with ban_code/ban_reason/ban_expires_at), needs_qr, and last
+    connect failure. While temp_banned is true the bridge pauses outgoing messages.
+    """
+    return whatsapp_get_status()
 
 if __name__ == "__main__":
     # Initialize and run the server

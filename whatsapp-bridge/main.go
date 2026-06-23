@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -363,6 +364,107 @@ type DisappearingRequest struct {
 	Duration string `json:"duration"` // off | 24h | 7d | 90d
 }
 
+// botStatus mantiene el estado de conexion/sesion/ban del cliente para /api/status
+// y para pausar envios ante un ban temporal. Thread-safe (lo escribe el event handler).
+type botStatus struct {
+	mu                 sync.RWMutex
+	lastConnected      time.Time
+	lastDisconnected   time.Time
+	tempBanned         bool
+	tempBanCode        int
+	tempBanReason      string
+	tempBanExpiresAt   time.Time
+	loggedOut          bool
+	loggedOutReason    string
+	lastConnectFailure string
+	lastConnectFailAt  time.Time
+}
+
+var status = &botStatus{}
+
+func (s *botStatus) onConnected() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastConnected = time.Now()
+	s.loggedOut = false // si reconecto OK, ya no necesita re-escanear QR
+}
+
+func (s *botStatus) onDisconnected() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastDisconnected = time.Now()
+}
+
+func (s *botStatus) onTempBan(code int, reason string, expire time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tempBanned = true
+	s.tempBanCode = code
+	s.tempBanReason = reason
+	if expire > 0 {
+		s.tempBanExpiresAt = time.Now().Add(expire)
+	}
+}
+
+func (s *botStatus) onLoggedOut(reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loggedOut = true
+	s.loggedOutReason = reason
+}
+
+func (s *botStatus) onConnectFailure(msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastConnectFailure = msg
+	s.lastConnectFailAt = time.Now()
+}
+
+// isTempBanned indica si hay un ban temporal vigente (no expirado).
+func (s *botStatus) isTempBanned() (bool, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.tempBanned && (s.tempBanExpiresAt.IsZero() || s.tempBanExpiresAt.After(time.Now())) {
+		return true, s.tempBanReason
+	}
+	return false, ""
+}
+
+// snapshot arma el estado actual para /api/status (conexion/login en vivo desde el client).
+func (s *botStatus) snapshot(client *whatsmeow.Client) map[string]interface{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	m := map[string]interface{}{
+		"connected":   client.IsConnected(),
+		"logged_in":   client.Store.ID != nil,
+		"temp_banned": s.tempBanned && (s.tempBanExpiresAt.IsZero() || s.tempBanExpiresAt.After(time.Now())),
+		"needs_qr":    client.Store.ID == nil || s.loggedOut,
+	}
+	if client.Store.ID != nil {
+		m["jid"] = client.Store.ID.String()
+	}
+	if s.tempBanned {
+		m["ban_code"] = s.tempBanCode
+		m["ban_reason"] = s.tempBanReason
+		if !s.tempBanExpiresAt.IsZero() {
+			m["ban_expires_at"] = s.tempBanExpiresAt.Format(time.RFC3339)
+		}
+	}
+	if s.loggedOut {
+		m["logged_out_reason"] = s.loggedOutReason
+	}
+	if s.lastConnectFailure != "" {
+		m["last_connect_failure"] = s.lastConnectFailure
+	}
+	if !s.lastConnected.IsZero() {
+		m["last_connected_at"] = s.lastConnected.Format(time.RFC3339)
+	}
+	if !s.lastDisconnected.IsZero() {
+		m["last_disconnected_at"] = s.lastDisconnected.Format(time.RFC3339)
+	}
+	return m
+}
+
 // lastMsgKey arma el MessageKey + timestamp del ultimo mensaje de un chat,
 // requerido por BuildArchive y BuildMarkChatAsRead.
 func lastMsgKey(store *MessageStore, chatJID types.JID) (*waCommon.MessageKey, time.Time) {
@@ -486,6 +588,10 @@ func parseParticipantJIDs(raw []string) ([]types.JID, error) {
 func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, quotedMessageID string, mentions []string) (bool, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp"
+	}
+	// Pausar envios si hay un ban temporal vigente (evita empeorar la situacion con el server).
+	if banned, reason := status.isTempBanned(); banned {
+		return false, fmt.Sprintf("envio bloqueado: cuenta con ban temporal (%s). Espera a que expire; ver /api/status", reason)
 	}
 
 	// Create JID for recipient
@@ -2060,6 +2166,14 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "disappearing timer set", "duration": req.Duration})
 	}))
 
+	// Handler: estado de conexion/sesion/ban del cliente
+	http.HandleFunc("/api/status", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		m := status.snapshot(client)
+		m["success"] = true
+		json.NewEncoder(w).Encode(m)
+	}))
+
 	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).
 	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
 	srv := &http.Server{
@@ -2148,14 +2262,29 @@ func main() {
 
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
+			status.onConnected()
 
 		case *events.Disconnected:
 			// EnableAutoReconnect (mas arriba) ya gestiona la reconexion. Un reconnect
 			// manual aqui competiria con el interno de whatsmeow (race / StreamReplaced).
 			logger.Warnf("Disconnected from WhatsApp; auto-reconnect en curso...")
+			status.onDisconnected()
 
 		case *events.LoggedOut:
-			logger.Warnf("Device logged out, please scan QR code to log in again")
+			logger.Warnf("Device logged out (reason=%s, onConnect=%v); please scan QR code to log in again", v.Reason.String(), v.OnConnect)
+			status.onLoggedOut(v.Reason.String())
+
+		case *events.TemporaryBan:
+			// 🔴 Ban temporal: loggear fuerte y pausar envios (sendWhatsAppMessage chequea isTempBanned).
+			logger.Errorf("⚠️ TEMPORARY BAN: code=%d (%s); expira en %s. ENVIOS PAUSADOS.", int(v.Code), v.Code.String(), v.Expire)
+			status.onTempBan(int(v.Code), v.Code.String(), v.Expire)
+
+		case *events.ConnectFailure:
+			logger.Errorf("Connect failure: reason=%d (%s) msg=%s", int(v.Reason), v.Reason.String(), v.Message)
+			status.onConnectFailure(fmt.Sprintf("%d %s: %s", int(v.Reason), v.Reason.String(), v.Message))
+			if v.Reason.IsLoggedOut() {
+				status.onLoggedOut(v.Reason.String())
+			}
 		}
 	})
 
@@ -2176,6 +2305,9 @@ func main() {
 		for evt := range qrChan {
 			if evt.Event == "code" {
 				fmt.Println("\nScan this QR code with your WhatsApp app:")
+				// Code crudo para poder generar un PNG nitido fuera de la terminal (el ASCII
+				// half-block renderiza muy lento en algunos clientes y el QR expira antes).
+				fmt.Printf("QR_RAW>>>%s<<<\n", evt.Code)
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
 			} else if evt.Event == "success" {
 				connected <- true
