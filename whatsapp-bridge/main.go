@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	crand "crypto/rand"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -255,6 +258,10 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 
 	// Check if we have media to send
 	if mediaPath != "" {
+		// Sandbox: evitar exfiltracion de archivos sensibles via media_path
+		if err := validateMediaPath(mediaPath); err != nil {
+			return false, fmt.Sprintf("media path rejected: %v", err)
+		}
 		// Read media file
 		mediaData, err := os.ReadFile(mediaPath)
 		if err != nil {
@@ -323,7 +330,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 			return false, fmt.Sprintf("Error uploading media: %v", err)
 		}
 
-		fmt.Println("Media uploaded", resp)
+		fmt.Println("Media uploaded successfully")
 
 		// Create the appropriate message type based on media type
 		switch mediaType {
@@ -730,10 +737,74 @@ func extractDirectPathFromURL(url string) string {
 	return "/" + pathPart
 }
 
+// getOrCreateBridgeToken devuelve un token compartido entre el bridge y el MCP server.
+// Se persiste en store/.bridge_token (0600); el server Python lo lee del mismo archivo.
+// Asi la auth es automatica (sin config manual) y protege ante otros procesos locales.
+func getOrCreateBridgeToken() (string, error) {
+	path := filepath.Join("store", ".bridge_token")
+	if data, err := os.ReadFile(path); err == nil {
+		if tok := strings.TrimSpace(string(data)); tok != "" {
+			return tok, nil
+		}
+	}
+	buf := make([]byte, 32)
+	if _, err := crand.Read(buf); err != nil {
+		return "", fmt.Errorf("failed to generate token: %v", err)
+	}
+	tok := hex.EncodeToString(buf)
+	if err := os.WriteFile(path, []byte(tok), 0600); err != nil {
+		return "", fmt.Errorf("failed to persist token: %v", err)
+	}
+	return tok, nil
+}
+
+// validateMediaPath protege contra exfiltracion de archivos: resuelve symlinks,
+// rechaza componentes ocultos (donde viven secretos: ~/.ssh, ~/.aws, ~/.gnupg...)
+// y exige que sea un archivo regular existente.
+func validateMediaPath(p string) error {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return fmt.Errorf("invalid path: %v", err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return fmt.Errorf("cannot resolve path: %v", err)
+	}
+	for _, part := range strings.Split(resolved, string(os.PathSeparator)) {
+		if len(part) > 1 && strings.HasPrefix(part, ".") {
+			return fmt.Errorf("hidden path component %q not allowed", part)
+		}
+	}
+	fi, err := os.Stat(resolved)
+	if err != nil {
+		return fmt.Errorf("cannot stat file: %v", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file")
+	}
+	return nil
+}
+
 // Start a REST API server to expose the WhatsApp client functionality
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
+	token, tokErr := getOrCreateBridgeToken()
+	if tokErr != nil {
+		fmt.Printf("WARNING: could not set up auth token: %v\n", tokErr)
+	}
+	// Middleware: exige el token compartido (X-Auth-Token) en cada request.
+	withAuth := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			got := r.Header.Get("X-Auth-Token")
+			if token == "" || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			h(w, r)
+		}
+	}
+
 	// Handler for sending messages
-	http.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/send", withAuth(func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -776,10 +847,10 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			Success: success,
 			Message: message,
 		})
-	})
+	}))
 
 	// Handler for downloading media
-	http.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/download", withAuth(func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -827,15 +898,22 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			Filename: filename,
 			Path:     path,
 		})
-	})
+	}))
 
-	// Start the server
-	serverAddr := fmt.Sprintf(":%d", port)
+	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).
+	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
+	srv := &http.Server{
+		Addr:         serverAddr,
+		Handler:      nil, // usa el DefaultServeMux donde registramos los handlers
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
 
 	// Run server in a goroutine so it doesn't block
 	go func() {
-		if err := http.ListenAndServe(serverAddr, nil); err != nil {
+		if err := srv.ListenAndServe(); err != nil {
 			fmt.Printf("REST API server error: %v\n", err)
 		}
 	}()

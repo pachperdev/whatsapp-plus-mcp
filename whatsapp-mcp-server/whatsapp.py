@@ -26,6 +26,17 @@ MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 # whatsmeow guarda la libreta de contactos y el mapeo lid<->numero aqui
 WHATSAPP_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'whatsapp.db')
 WHATSAPP_API_BASE_URL = "http://localhost:8080/api"
+# Token de auth compartido con el bridge (el bridge lo genera en store/.bridge_token).
+BRIDGE_TOKEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', '.bridge_token')
+
+
+def _bridge_token() -> str:
+    """Lee el token compartido que el bridge persiste en store/.bridge_token."""
+    try:
+        with open(BRIDGE_TOKEN_PATH) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 
 @dataclass
 class Message:
@@ -723,7 +734,7 @@ def send_message(recipient: str, message: str) -> Tuple[bool, str]:
             "message": message,
         }
         
-        response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+        response = requests.post(url, json=payload, headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -757,7 +768,7 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+        response = requests.post(url, json=payload, headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -797,7 +808,7 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+        response = requests.post(url, json=payload, headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -830,7 +841,7 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             "chat_jid": chat_jid
         }
         
-        response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+        response = requests.post(url, json=payload, headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
         
         if response.status_code == 200:
             result = response.json()

@@ -7,3 +7,6 @@ whatsapp-bridge/whatsapp-bridge
 
 # Config MCP local (rutas absolutas de la máquina, no portable)
 .mcp.json
+
+# Token de auth del bridge (secreto local; se regenera solo si falta)
+whatsapp-bridge/store/.bridge_token
