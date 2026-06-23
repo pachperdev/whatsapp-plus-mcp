@@ -133,6 +133,35 @@ Client son **wrappers de baja complejidad** (handler REST en el bridge + tool Py
 
 ---
 
+## 🔍 Gaps de cobertura whatsmeow — backlog (auditoría jun-2026)
+
+Barrido de los 133 métodos públicos del `Client` vs las 43 tools. ~40 son infra/internos (no son tools:
+conexión, pairing, proxy, HTTP clients, receipts, encrypt/decrypt helpers, `DangerousInternals`). Decisión:
+implementar **Tier A + Tier B paso a paso** (Tier A primero). Tier C NO por ahora.
+
+### Tier A — alto valor, baja complejidad
+- 🔲 **Encuestas: votar + leer votos** — `BuildPollVote(ctx, pollInfo *types.MessageInfo, optionNames)` → `SendMessage`; votos entrantes con `DecryptPollVote(ctx, *events.Message)` en el handler. (Hoy `send_poll` crea pero no se vota ni se leen resultados.)
+- 🔲 **Grupos — foto y modos** — `SetGroupPhoto(jid, avatar []byte)`, `SetGroupAnnounce(jid, bool)` (solo admins escriben), `SetGroupLocked(jid, bool)` (solo admins editan info), `SetGroupDescription(jid, desc)`.
+- 🔲 **Grupos — solicitudes de ingreso** — `GetGroupRequestParticipants(jid)` + `UpdateGroupRequestParticipants(jid, jids, action)` (approve/reject) + `SetGroupJoinApprovalMode(jid, bool)`.
+- 🔲 **`GetBusinessProfile(jid)`** — info de cuentas business (relevante para comercios).
+- 🔲 **`Logout(ctx)`** → endpoint `/api/logout` (desvincular desde el chat; encaja con plug-and-play).
+- 🔲 **`SetStatusMessage(msg)`** — editar el "about" propio.
+
+### Tier B — valor medio
+- 🔲 **Unirse por código:** `JoinGroupWithInvite(jid, inviter, code, expiration)` + `GetGroupInfoFromInvite(...)` (además del link ya soportado).
+- 🔲 **Presencia de terceros:** `SubscribePresence(jid)` + handler `events.Presence`/`events.ChatPresence` (last-seen/online). *(coincide con Tier 3)*
+- 🔲 **`SendPresence(state)`** — marcarse available/unavailable (requisito para recibir presencia de otros).
+- 🔲 **`RejectCall(callFrom, callID)`** — rechazar llamadas entrantes (+ escuchar `events.CallOffer`).
+- 🔲 **`GetUserDevices(jids)`** — dispositivos de un contacto.
+- 🔲 **`SetDefaultDisappearingTimer(timer)`** — timer por defecto para chats nuevos.
+
+### Tier C — NO se implementa (jun-2026, salvo que el caso de uso lo pida)
+Newsletters/Channels (~14 métodos), Comunidades (`LinkGroup`/`GetSubGroups`/`GetLinkedGroupsParticipants`),
+privacidad (`Get/SetPrivacySetting`, `GetStatusPrivacy`), bots Meta (`GetBotListV2`/`GetBotProfiles`),
+`DeleteMedia`/`DownloadThumbnail`/`GetContactQRLink`.
+
+---
+
 ## 📚 Referencia rápida — capacidades whatsmeow (de la investigación)
 
 `Build*` → se mandan con `SendMessage` (mismo patrón que reactions ya implementado):
