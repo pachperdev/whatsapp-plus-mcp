@@ -43,7 +43,11 @@ from whatsapp import (
     create_group as whatsapp_create_group,
     update_group_participants as whatsapp_update_group_participants,
     set_disappearing_messages as whatsapp_set_disappearing_messages,
-    get_status as whatsapp_get_status
+    get_status as whatsapp_get_status,
+    set_status_message as whatsapp_set_status_message,
+    get_business_profile as whatsapp_get_business_profile,
+    get_user_devices as whatsapp_get_user_devices,
+    set_default_disappearing as whatsapp_set_default_disappearing
 )
 
 # Initialize FastMCP server
@@ -624,6 +628,49 @@ def get_status() -> Dict[str, Any]:
     connect failure. While temp_banned is true the bridge pauses outgoing messages.
     """
     return whatsapp_get_status()
+
+@mcp.tool()
+def set_status_message(message: str) -> Dict[str, Any]:
+    """Set your own WhatsApp status message (the "about" text on your profile).
+
+    Args:
+        message: The new about/status text
+    """
+    success, status_message = whatsapp_set_status_message(message)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def get_business_profile(jid: str) -> Dict[str, Any]:
+    """Get the business profile of a WhatsApp Business contact.
+
+    Returns address, email, categories and business hours timezone when the contact is a
+    business account (is_business=false otherwise).
+
+    Args:
+        jid: The contact JID (e.g. "573001234567@s.whatsapp.net")
+    """
+    return whatsapp_get_business_profile(jid)
+
+@mcp.tool()
+def get_user_devices(jids: List[str]) -> Dict[str, Any]:
+    """List the linked devices (companion devices) of one or more contacts.
+
+    Args:
+        jids: List of contact phone numbers or JIDs
+    """
+    return whatsapp_get_user_devices(jids)
+
+@mcp.tool()
+def set_default_disappearing(duration: str = "off") -> Dict[str, Any]:
+    """Set the DEFAULT disappearing-messages timer applied to NEW chats you start.
+
+    Does not change existing chats (use set_disappearing_messages for a specific chat).
+
+    Args:
+        duration: One of "off", "24h", "7d", "90d"
+    """
+    success, status_message = whatsapp_set_default_disappearing(duration)
+    return {"success": success, "message": status_message}
 
 if __name__ == "__main__":
     # Initialize and run the server

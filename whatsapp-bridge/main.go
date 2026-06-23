@@ -423,6 +423,28 @@ type DisappearingRequest struct {
 	Duration string `json:"duration"` // off | 24h | 7d | 90d
 }
 
+// --- Lote A1: perfil & cuenta ---
+
+// SetStatusRequest cambia el mensaje de estado ("about") propio
+type SetStatusRequest struct {
+	Message string `json:"message"`
+}
+
+// BusinessProfileRequest pide el perfil de negocio de un contacto
+type BusinessProfileRequest struct {
+	JID string `json:"jid"`
+}
+
+// UserDevicesRequest pide los dispositivos de uno o varios contactos
+type UserDevicesRequest struct {
+	JIDs []string `json:"jids"`
+}
+
+// DefaultDisappearingRequest setea el timer de mensajes temporales por defecto (chats nuevos)
+type DefaultDisappearingRequest struct {
+	Duration string `json:"duration"` // off | 24h | 7d | 90d
+}
+
 // botStatus mantiene el estado de conexion/sesion/ban del cliente para /api/status
 // y para pausar envios ante un ban temporal. Thread-safe (lo escribe el event handler).
 type botStatus struct {
@@ -2285,6 +2307,117 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		m := status.snapshot(client)
 		m["success"] = true
 		json.NewEncoder(w).Encode(m)
+	}))
+
+	// --- Lote A1: perfil & cuenta ---
+
+	// Handler: set status message ("about" propio)
+	http.HandleFunc("/api/set_status", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req SetStatusRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		if err := client.SetStatusMessage(context.Background(), req.Message); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "status updated"})
+	}))
+
+	// Handler: get business profile de un contacto
+	http.HandleFunc("/api/business_profile", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req BusinessProfileRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.JID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid jid"})
+			return
+		}
+		bp, err := client.GetBusinessProfile(context.Background(), jid)
+		if err != nil {
+			// Contacto NO business: whatsmeow devuelve "missing jid"/not-found. No es error real.
+			if strings.Contains(err.Error(), "missing jid") || strings.Contains(err.Error(), "not found") {
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "is_business": false})
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		if bp == nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "is_business": false})
+			return
+		}
+		cats := make([]map[string]string, 0, len(bp.Categories))
+		for _, c := range bp.Categories {
+			cats = append(cats, map[string]string{"id": c.ID, "name": c.Name})
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true, "is_business": true, "jid": bp.JID.String(),
+			"address": bp.Address, "email": bp.Email, "categories": cats,
+			"business_hours_timezone": bp.BusinessHoursTimeZone,
+		})
+	}))
+
+	// Handler: get user devices (dispositivos vinculados de un contacto)
+	http.HandleFunc("/api/user_devices", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req UserDevicesRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jids, err := parseParticipantJIDs(req.JIDs)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		devices, err := client.GetUserDevices(context.Background(), jids)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		out := make([]string, 0, len(devices))
+		for _, d := range devices {
+			out = append(out, d.String())
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "devices": out, "count": len(out)})
+	}))
+
+	// Handler: set default disappearing timer (aplica a chats NUEVOS)
+	http.HandleFunc("/api/default_disappearing", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req DefaultDisappearingRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		timer, ok := whatsmeow.ParseDisappearingTimerString(req.Duration)
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "duration must be one of: off, 24h, 7d, 90d"})
+			return
+		}
+		if err := client.SetDefaultDisappearingTimer(context.Background(), timer); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "default disappearing timer set", "duration": req.Duration})
 	}))
 
 	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).

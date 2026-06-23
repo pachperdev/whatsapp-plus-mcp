@@ -1316,3 +1316,27 @@ def get_status() -> Dict[str, Any]:
         return {"success": False, "message": f"Request error: {str(e)}"}
     except json.JSONDecodeError:
         return {"success": False, "message": "Error parsing response"}
+
+
+# --- Lote A1: perfil & cuenta ---
+
+def set_status_message(message: str) -> Tuple[bool, str]:
+    """Cambia el mensaje de estado ('about') propio."""
+    d = _bridge_post("set_status", {"message": message})
+    return d.get("success", False), d.get("message", "")
+
+
+def get_business_profile(jid: str) -> Dict[str, Any]:
+    """Perfil de negocio de un contacto (address, email, categories, business hours)."""
+    return _bridge_post("business_profile", {"jid": jid})
+
+
+def get_user_devices(jids: List[str]) -> Dict[str, Any]:
+    """Dispositivos vinculados de uno o varios contactos."""
+    return _bridge_post("user_devices", {"jids": jids})
+
+
+def set_default_disappearing(duration: str = "off") -> Tuple[bool, str]:
+    """Timer de mensajes temporales por defecto para chats NUEVOS. duration: off|24h|7d|90d."""
+    d = _bridge_post("default_disappearing", {"duration": duration})
+    return d.get("success", False), d.get("message", "")
