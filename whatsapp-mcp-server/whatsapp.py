@@ -1,9 +1,10 @@
 import sqlite3
 import sys
+import time
 import logging
 from datetime import datetime
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 import os.path
 import requests
 import json
@@ -118,13 +119,21 @@ def _load_contact_index():
 
 
 _CONTACT_INDEX = None
+_CONTACT_INDEX_TS = 0.0
+_CONTACT_INDEX_TTL = 300.0  # 5 min
 
 
 def _get_contact_index(refresh: bool = False):
-    """Cache en memoria del indice de contactos (se refresca por proceso)."""
-    global _CONTACT_INDEX
-    if _CONTACT_INDEX is None or refresh:
+    """Cache en memoria del indice de contactos, con TTL para no quedar obsoleto.
+
+    El server MCP es de larga vida; sin TTL, un contacto agregado/renombrado en
+    WhatsApp no aparecia hasta reiniciar. Se recarga si pasa el TTL o si refresh=True.
+    """
+    global _CONTACT_INDEX, _CONTACT_INDEX_TS
+    now = time.monotonic()
+    if _CONTACT_INDEX is None or refresh or (now - _CONTACT_INDEX_TS) > _CONTACT_INDEX_TTL:
         _CONTACT_INDEX = _load_contact_index()
+        _CONTACT_INDEX_TS = now
     return _CONTACT_INDEX
 
 
@@ -141,6 +150,10 @@ def resolve_contact_name(jid: str) -> Optional[str]:
     names, lid_to_pn = _get_contact_index()
     local = _normalize_phone(jid)
     pn = lid_to_pn.get(local) if suffix.startswith('lid') else local
+    # El sender crudo a veces es un lid SIN sufijo @lid: mapearlo a su numero real
+    # para resolver el nombre de la libreta (consistencia con list_chats).
+    if pn and pn in lid_to_pn:
+        pn = lid_to_pn[pn]
     if pn and pn in names:
         return names[pn]
     return None
@@ -162,6 +175,16 @@ def _canonical_chat_key(jid: str) -> str:
     local = _normalize_phone(jid)
     pn = lid_to_pn.get(local) if suffix.startswith('lid') else local
     return pn or jid
+
+
+def refresh_contacts() -> dict:
+    """Fuerza recargar el indice de nombres desde la libreta de WhatsApp.
+
+    Util tras agregar o renombrar contactos para que list_chats / search_contacts
+    los reflejen sin reiniciar el server.
+    """
+    names, _ = _get_contact_index(refresh=True)
+    return {"success": True, "contacts_loaded": len(names)}
 
 
 def get_sender_name(sender_jid: str) -> str:
@@ -219,6 +242,27 @@ def format_messages_list(messages: List[Message], show_chat_info: bool = True) -
         output += format_message(message, show_chat_info)
     return output
 
+
+def message_to_dict(message: Message) -> Dict[str, Any]:
+    """Convierte un Message a dict estructurado (consumible por el LLM).
+
+    A diferencia del texto plano, expone message_id/chat_jid (para encadenar con
+    download_media) y resuelve el nombre del remitente.
+    """
+    sender_name = "Me" if message.is_from_me else (resolve_contact_name(message.sender) or message.sender)
+    return {
+        "timestamp": message.timestamp.isoformat() if message.timestamp else None,
+        "chat_jid": message.chat_jid,
+        "chat_name": message.chat_name,
+        "message_id": message.id,
+        "sender": message.sender,
+        "sender_name": sender_name,
+        "is_from_me": bool(message.is_from_me),
+        "content": message.content,
+        "media_type": message.media_type or None,
+    }
+
+
 def list_messages(
     after: Optional[str] = None,
     before: Optional[str] = None,
@@ -230,7 +274,7 @@ def list_messages(
     include_context: bool = True,
     context_before: int = 1,
     context_after: int = 1
-) -> List[Message]:
+) -> List[Dict[str, Any]]:
     """Get messages matching the specified criteria with optional context."""
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
@@ -300,18 +344,22 @@ def list_messages(
             result.append(message)
             
         if include_context and result:
-            # Add context for each message
+            # Anexar contexto a cada match, deduplicando por (id, chat_jid) para no
+            # repetir mensajes ni romper el orden cronologico.
             messages_with_context = []
+            seen = set()
             for msg in result:
                 context = get_message_context(msg.id, context_before, context_after)
-                messages_with_context.extend(context.before)
-                messages_with_context.append(context.message)
-                messages_with_context.extend(context.after)
-            
-            return format_messages_list(messages_with_context, show_chat_info=True)
-            
-        # Format and display messages without context
-        return format_messages_list(result, show_chat_info=True)    
+                for m in [*context.before, context.message, *context.after]:
+                    key = (m.id, m.chat_jid)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    messages_with_context.append(m)
+            return [message_to_dict(m) for m in messages_with_context]
+
+        # Sin contexto
+        return [message_to_dict(m) for m in result]
         
     except sqlite3.Error as e:
         logger.error(f"Database error: {e}")

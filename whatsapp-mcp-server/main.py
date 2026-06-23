@@ -12,7 +12,8 @@ from whatsapp import (
     send_message as whatsapp_send_message,
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
-    download_media as whatsapp_download_media
+    download_media as whatsapp_download_media,
+    refresh_contacts as whatsapp_refresh_contacts
 )
 
 # Initialize FastMCP server
@@ -27,6 +28,15 @@ def search_contacts(query: str) -> List[Dict[str, Any]]:
     """
     contacts = whatsapp_search_contacts(query)
     return contacts
+
+@mcp.tool()
+def refresh_contacts() -> Dict[str, Any]:
+    """Refresh the contact-name index from the WhatsApp address book.
+
+    Call this after adding or renaming contacts so list_chats / search_contacts
+    pick up the changes without restarting the server.
+    """
+    return whatsapp_refresh_contacts()
 
 @mcp.tool()
 def list_messages(
