@@ -288,6 +288,35 @@ type UserInfoRequest struct {
 	JIDs []string `json:"jids"`
 }
 
+// GroupActionRequest for participants / invite_link / leave
+type GroupActionRequest struct {
+	GroupJID string `json:"group_jid"`
+	Reset    bool   `json:"reset,omitempty"`
+}
+
+// SetGroupNameRequest renames a group
+type SetGroupNameRequest struct {
+	GroupJID string `json:"group_jid"`
+	Name     string `json:"name"`
+}
+
+// SetGroupTopicRequest sets a group description/topic
+type SetGroupTopicRequest struct {
+	GroupJID string `json:"group_jid"`
+	Topic    string `json:"topic"`
+}
+
+// JoinGroupRequest joins a group via invite link/code
+type JoinGroupRequest struct {
+	Code string `json:"code"`
+}
+
+// BlockRequest blocks/unblocks a contact
+type BlockRequest struct {
+	JID    string `json:"jid"`
+	Action string `json:"action"` // block | unblock
+}
+
 // Function to send a WhatsApp message
 func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string) (bool, string) {
 	if !client.IsConnected() {
@@ -1266,6 +1295,183 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			}
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "users": out})
+	}))
+
+	// Handler: get group participants
+	http.HandleFunc("/api/group_participants", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req GroupActionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.GroupJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			return
+		}
+		info, err := client.GetGroupInfo(context.Background(), jid)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		parts := make([]map[string]interface{}, 0, len(info.Participants))
+		for _, p := range info.Participants {
+			parts = append(parts, map[string]interface{}{
+				"jid":            p.JID.String(),
+				"phone":          p.PhoneNumber.String(),
+				"is_admin":       p.IsAdmin,
+				"is_super_admin": p.IsSuperAdmin,
+			})
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true, "name": info.Name, "participant_count": len(parts), "participants": parts,
+		})
+	}))
+
+	// Handler: get / reset group invite link
+	http.HandleFunc("/api/group_invite_link", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req GroupActionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.GroupJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			return
+		}
+		link, err := client.GetGroupInviteLink(context.Background(), jid, req.Reset)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "link": link})
+	}))
+
+	// Handler: join a group via invite link/code
+	http.HandleFunc("/api/join_group", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req JoinGroupRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		code := req.Code
+		if idx := strings.LastIndex(code, "/"); idx >= 0 {
+			code = code[idx+1:] // aceptar link completo o solo el codigo
+		}
+		jid, err := client.JoinGroupWithLink(context.Background(), code)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "group_jid": jid.String()})
+	}))
+
+	// Handler: leave a group
+	http.HandleFunc("/api/leave_group", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req GroupActionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.GroupJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			return
+		}
+		if err := client.LeaveGroup(context.Background(), jid); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "left group"})
+	}))
+
+	// Handler: set group name
+	http.HandleFunc("/api/set_group_name", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req SetGroupNameRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.GroupJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			return
+		}
+		if err := client.SetGroupName(context.Background(), jid, req.Name); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group name updated"})
+	}))
+
+	// Handler: set group topic/description
+	http.HandleFunc("/api/set_group_topic", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req SetGroupTopicRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.GroupJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			return
+		}
+		if err := client.SetGroupTopic(context.Background(), jid, "", "", req.Topic); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group topic updated"})
+	}))
+
+	// Handler: block / unblock a contact
+	http.HandleFunc("/api/block", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req BlockRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.JID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid jid"})
+			return
+		}
+		action := events.BlocklistChangeActionBlock
+		if req.Action == "unblock" {
+			action = events.BlocklistChangeActionUnblock
+		}
+		if _, err := client.UpdateBlocklist(context.Background(), jid, action); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": string(action) + "ed"})
 	}))
 
 	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).

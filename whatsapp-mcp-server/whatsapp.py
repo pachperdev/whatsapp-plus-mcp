@@ -39,6 +39,21 @@ def _bridge_token() -> str:
     except OSError:
         return ""
 
+
+def _bridge_post(path: str, payload: dict) -> Dict[str, Any]:
+    """POST a un endpoint del bridge con auth + timeout; devuelve el JSON o {success:False}."""
+    try:
+        resp = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/{path}",
+            json=payload,
+            headers={"X-Auth-Token": _bridge_token()},
+            timeout=REQUEST_TIMEOUT,
+        )
+        return resp.json()
+    except (requests.RequestException, ValueError) as e:
+        logger.error(f"bridge POST /{path} error: {e}")
+        return {"success": False, "message": str(e)}
+
 @dataclass
 class Message:
     timestamp: datetime
@@ -1168,3 +1183,50 @@ def get_user_info(jids: List[str]) -> Dict[str, Any]:
     except (requests.RequestException, ValueError) as e:
         logger.error(f"get_user_info error: {e}")
         return {"success": False, "message": str(e)}
+
+
+# --- Lote C: grupos + bloqueo ---
+
+def get_group_participants(group_jid: str) -> Dict[str, Any]:
+    """Lista los participantes de un grupo (jid, telefono, admin)."""
+    return _bridge_post("group_participants", {"group_jid": group_jid})
+
+
+def get_group_invite_link(group_jid: str, reset: bool = False) -> Dict[str, Any]:
+    """Obtiene (o resetea con reset=True) el link de invitacion de un grupo."""
+    return _bridge_post("group_invite_link", {"group_jid": group_jid, "reset": reset})
+
+
+def join_group(code: str) -> Dict[str, Any]:
+    """Une a un grupo via link o codigo de invitacion."""
+    return _bridge_post("join_group", {"code": code})
+
+
+def leave_group(group_jid: str) -> Tuple[bool, str]:
+    """Sale de un grupo."""
+    d = _bridge_post("leave_group", {"group_jid": group_jid})
+    return d.get("success", False), d.get("message", "")
+
+
+def set_group_name(group_jid: str, name: str) -> Tuple[bool, str]:
+    """Renombra un grupo (max 25 chars)."""
+    d = _bridge_post("set_group_name", {"group_jid": group_jid, "name": name})
+    return d.get("success", False), d.get("message", "")
+
+
+def set_group_topic(group_jid: str, topic: str) -> Tuple[bool, str]:
+    """Cambia la descripcion/topic de un grupo."""
+    d = _bridge_post("set_group_topic", {"group_jid": group_jid, "topic": topic})
+    return d.get("success", False), d.get("message", "")
+
+
+def block_contact(jid: str) -> Tuple[bool, str]:
+    """Bloquea un contacto."""
+    d = _bridge_post("block", {"jid": jid, "action": "block"})
+    return d.get("success", False), d.get("message", "")
+
+
+def unblock_contact(jid: str) -> Tuple[bool, str]:
+    """Desbloquea un contacto."""
+    d = _bridge_post("block", {"jid": jid, "action": "unblock"})
+    return d.get("success", False), d.get("message", "")

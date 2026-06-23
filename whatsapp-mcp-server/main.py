@@ -24,7 +24,15 @@ from whatsapp import (
     list_all_contacts as whatsapp_list_all_contacts,
     check_whatsapp as whatsapp_check_whatsapp,
     get_profile_picture as whatsapp_get_profile_picture,
-    get_user_info as whatsapp_get_user_info
+    get_user_info as whatsapp_get_user_info,
+    get_group_participants as whatsapp_get_group_participants,
+    get_group_invite_link as whatsapp_get_group_invite_link,
+    join_group as whatsapp_join_group,
+    leave_group as whatsapp_leave_group,
+    set_group_name as whatsapp_set_group_name,
+    set_group_topic as whatsapp_set_group_topic,
+    block_contact as whatsapp_block_contact,
+    unblock_contact as whatsapp_unblock_contact
 )
 
 # Initialize FastMCP server
@@ -384,6 +392,86 @@ def get_user_info(jids: List[str]) -> Dict[str, Any]:
         jids: List of user JIDs
     """
     return whatsapp_get_user_info(jids)
+
+@mcp.tool()
+def get_group_participants(group_jid: str) -> Dict[str, Any]:
+    """List the participants of a group (jid, phone, is_admin, is_super_admin).
+
+    Args:
+        group_jid: The group JID (e.g. "123456789-...@g.us")
+    """
+    return whatsapp_get_group_participants(group_jid)
+
+@mcp.tool()
+def get_group_invite_link(group_jid: str, reset: bool = False) -> Dict[str, Any]:
+    """Get a group's invite link.
+
+    Args:
+        group_jid: The group JID
+        reset: True to revoke the previous link and generate a new one
+    """
+    return whatsapp_get_group_invite_link(group_jid, reset)
+
+@mcp.tool()
+def join_group(code: str) -> Dict[str, Any]:
+    """Join a group via its invite link or code.
+
+    Args:
+        code: The full invite link (https://chat.whatsapp.com/...) or just the code
+    """
+    return whatsapp_join_group(code)
+
+@mcp.tool()
+def leave_group(group_jid: str) -> Dict[str, Any]:
+    """Leave a group.
+
+    Args:
+        group_jid: The group JID to leave
+    """
+    success, status_message = whatsapp_leave_group(group_jid)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def set_group_name(group_jid: str, name: str) -> Dict[str, Any]:
+    """Rename a group (you must be admin; max 25 chars).
+
+    Args:
+        group_jid: The group JID
+        name: The new group name
+    """
+    success, status_message = whatsapp_set_group_name(group_jid, name)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def set_group_topic(group_jid: str, topic: str) -> Dict[str, Any]:
+    """Set a group's topic/description (you must be admin).
+
+    Args:
+        group_jid: The group JID
+        topic: The new topic/description text
+    """
+    success, status_message = whatsapp_set_group_topic(group_jid, topic)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def block_contact(jid: str) -> Dict[str, Any]:
+    """Block a contact.
+
+    Args:
+        jid: The contact JID to block
+    """
+    success, status_message = whatsapp_block_contact(jid)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def unblock_contact(jid: str) -> Dict[str, Any]:
+    """Unblock a contact.
+
+    Args:
+        jid: The contact JID to unblock
+    """
+    success, status_message = whatsapp_unblock_contact(jid)
+    return {"success": success, "message": status_message}
 
 if __name__ == "__main__":
     # Initialize and run the server
