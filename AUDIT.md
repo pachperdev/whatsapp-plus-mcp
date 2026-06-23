@@ -1,7 +1,7 @@
 # WhatsApp MCP — Estado y Plan de Trabajo
 
 Fork `mauricioDevApp/whatsapp-mcp`. Bridge Go (`whatsmeow`) + server Python (MCP).
-Última actualización: 2026-06-22.
+Última actualización: 2026-06-23.
 
 ---
 
@@ -44,21 +44,25 @@ check_whatsapp, get_profile_picture, get_user_info, list_all_contacts, send_poll
 get_group_participants, get_group_invite_link, join_group, leave_group, set_group_name,
 set_group_topic, block_contact/unblock_contact (RESUELTO el 400 vía `blockViaLID`).
 
-**FASE 1 Tier 2 — parcial:** ✅ reply/quote (`send_message` reply_to) · ✅ estado de chat
+**FASE 1 Tier 2 — COMPLETO:** ✅ reply/quote (`send_message` reply_to) · ✅ estado de chat
 (mute/pin/archive/mark/star/get_chat_settings, commit `04a3e87`) · ✅ request_more_history
 (on-demand history sync, best-effort, commit `e88ec56`) · ✅ menciones (@tag en send_message,
 combinables con reply, commit `a30d453`) · ✅ crear grupo + gestionar participantes
-(create_group, update_group_participants add/remove/promote/demote, commit `280a5d4`).
-🔲 set_disappearing_messages (último del Tier 2).
+(create_group, update_group_participants add/remove/promote/demote, commit `280a5d4`) ·
+✅ set_disappearing_messages (off/24h/7d/90d, commit `e193a13`).
 
-**Tools actuales (41):** search_contacts, list_messages, list_chats, get_chat,
+➡️ **FASE 1 (Tier 1 + Tier 2) cerrada.** Próximo foco: **FASE 2 — Robustez** (lo más prioritario:
+🔴 manejo de eventos de ban + `/api/status`). Tier 3 (captura no-texto, presencia, etc.) queda como ampliación opcional de FASE 1.
+
+**Tools actuales (42):** search_contacts, list_messages, list_chats, get_chat,
 get_direct_chat_by_contact, get_contact_chats, get_last_interaction, get_message_context,
 send_message (con reply_to), send_file, send_audio_message, download_media, list_groups, mark_as_read,
 react_to_message, refresh_contacts, edit_message, delete_message, send_typing, check_whatsapp,
 get_profile_picture, get_user_info, list_all_contacts, send_poll, get_group_participants,
 get_group_invite_link, join_group, leave_group, set_group_name, set_group_topic,
 block_contact, unblock_contact, mute_chat, pin_chat, archive_chat, mark_chat, star_message,
-get_chat_settings, request_more_history, create_group, update_group_participants.
+get_chat_settings, request_more_history, create_group, update_group_participants,
+set_disappearing_messages.
 
 ---
 
@@ -67,7 +71,7 @@ get_chat_settings, request_more_history, create_group, update_group_participants
 > Orden: **Fase 1 Funcionalidades → Fase 2 Robustez → Fase 3 Performance → Fase 4 Calidad/infra.**
 > La Fase 4 (tests/CI) se hace al final, cuando esté todo pulido a nivel funcional.
 
-### FASE 1 — Funcionalidades (tools nuevas)  ⬅️ EMPEZAMOS ACÁ
+### FASE 1 — Funcionalidades (tools nuevas)  ✅ Tier 1 + Tier 2 COMPLETOS
 
 Patrón clave: las tools basadas en `Build*` (Edit/Revoke/Poll/Reaction) o método directo del
 Client son **wrappers de baja complejidad** (handler REST en el bridge + tool Python).
@@ -95,7 +99,7 @@ Client son **wrappers de baja complejidad** (handler REST en el bridge + tool Py
 | ✅ Estado de chat: `mute_chat` / `pin_chat` / `archive_chat` / `mark_chat` (read/unread) / `star_message` / `get_chat_settings` (commit `04a3e87`, RESUELTO) | `appstate.Build*` + `SendAppState` + `Store.ChatSettings.GetChatSettings`. Nota fix: `BuildStar` mapea `sender==target → "0"` en el index; en directos/mensajes propios se pasa el chat como sender (sin esto la estrella no se ve). `mark_chat` con read=false solo pinta badge si el último mensaje es entrante. |
 | ✅ `create_group` / `update_group_participants` (add/remove/promote/demote) (commit `280a5d4`, RESUELTO) | `CreateGroup` (nombre ≤25 chars, no incluir el JID propio) / `UpdateGroupParticipants`. Validado en vivo: crear con N participantes, promote/demote, remove/add. **Nota op:** para *eliminar* un grupo hay que remover a todos los participantes y recién después salir — si salís primero, ya no podés administrarlo. |
 | ✅ `request_more_history` (commit `e88ec56`, RESUELTO) | peer message al propio JID con `Peer:true` (NO a `status@s.whatsapp.net`, eso cuelga en usync). **Best-effort**: WhatsApp es E2E, el server no guarda historial; lo sirve el teléfono primario (debe estar online) y solo lo que él conserve. Validado: el teléfono respondió eventos ON_DEMAND, `Stored 0` por no tener mensajes más viejos. |
-| `set_disappearing_messages` | `SetDisappearingTimer` |
+| ✅ `set_disappearing_messages` (commit `e193a13`, RESUELTO) | `SetDisappearingTimer` + `ParseDisappearingTimerString` (valida presets off/24h/7d/90d, rechaza el resto). Directos y grupos. Validado en vivo. |
 
 **Tier 3 — requieren event handler nuevo o estado en SQLite (mayor esfuerzo):**
 - 🔴 **Captura de mensajes NO-texto** (detectado 2026-06-23): `handleMessage`/`extractMediaInfo` solo guardan image/video/audio/document. **Se descartan: stickers, ubicación, contactos (vCard), polls, botones/listas, mensajes de sistema** → no quedan en la DB (no se pueden listar, citar con `reply`, ni descargar). Ampliar `extractMediaInfo` + `extractTextContent` para soportar `StickerMessage`, `LocationMessage`, `LiveLocationMessage`, `ContactMessage`/`ContactsArrayMessage`, `PollCreationMessage`. Además, `buildQuotedContext` solo cita texto (`Conversation`); citar un sticker/imagen requeriría reconstruir ese `QuotedMessage`.
