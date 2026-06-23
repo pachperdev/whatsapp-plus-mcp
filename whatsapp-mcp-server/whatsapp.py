@@ -1,4 +1,6 @@
 import sqlite3
+import sys
+import logging
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
@@ -6,6 +8,19 @@ import os.path
 import requests
 import json
 import audio
+
+# Logging SIEMPRE a stderr: en transporte stdio, stdout es el canal del protocolo
+# MCP (JSON-RPC). Un logger.error() a stdout inyecta texto crudo y corrompe el stream.
+logger = logging.getLogger("whatsapp_mcp")
+if not logger.handlers:
+    _handler = logging.StreamHandler(sys.stderr)
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
+
+# Timeout (connect, read) para las llamadas a la REST API del bridge.
+# Sin esto, si el bridge se cuelga (no caído) el server MCP queda bloqueado para siempre.
+REQUEST_TIMEOUT = (5, 30)
 
 MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
 # whatsmeow guarda la libreta de contactos y el mapeo lid<->numero aqui
@@ -87,7 +102,7 @@ def _load_contact_index():
             pass
         conn.close()
     except sqlite3.Error as e:
-        print(f"Database error loading contacts: {e}")
+        logger.error(f"Database error loading contacts: {e}")
     return names, lid_to_pn
 
 
@@ -139,7 +154,7 @@ def get_sender_name(sender_jid: str) -> str:
             return result[0]
         return sender_jid
     except sqlite3.Error as e:
-        print(f"Database error while getting sender name: {e}")
+        logger.error(f"Database error while getting sender name: {e}")
         return sender_jid
     finally:
         if 'conn' in locals():
@@ -162,7 +177,7 @@ def format_message(message: Message, show_chat_info: bool = True) -> None:
         sender_name = get_sender_name(message.sender) if not message.is_from_me else "Me"
         output += f"From: {sender_name}: {content_prefix}{message.content}\n"
     except Exception as e:
-        print(f"Error formatting message: {e}")
+        logger.error(f"Error formatting message: {e}")
     return output
 
 def format_messages_list(messages: List[Message], show_chat_info: bool = True) -> None:
@@ -270,7 +285,7 @@ def list_messages(
         return format_messages_list(result, show_chat_info=True)    
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return []
     finally:
         if 'conn' in locals():
@@ -363,7 +378,7 @@ def get_message_context(
         )
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         raise
     finally:
         if 'conn' in locals():
@@ -438,7 +453,7 @@ def list_chats(
         return result
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return []
     finally:
         if 'conn' in locals():
@@ -479,7 +494,7 @@ def search_contacts(query: str) -> List[Contact]:
                 )
         conn.close()
     except sqlite3.Error as e:
-        print(f"Database error searching contacts: {e}")
+        logger.error(f"Database error searching contacts: {e}")
 
     # 2) Complementar con chats (cubre nombres que solo existen ahi)
     try:
@@ -500,7 +515,7 @@ def search_contacts(query: str) -> List[Contact]:
                 results[pn] = Contact(phone_number=pn, name=resolved, jid=jid)
         conn.close()
     except sqlite3.Error as e:
-        print(f"Database error searching chats: {e}")
+        logger.error(f"Database error searching chats: {e}")
 
     return list(results.values())[:50]
 
@@ -550,7 +565,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
         return result
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return []
     finally:
         if 'conn' in locals():
@@ -599,7 +614,7 @@ def get_last_interaction(jid: str) -> str:
         return format_message(message)
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return None
     finally:
         if 'conn' in locals():
@@ -647,7 +662,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
         )
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return None
     finally:
         if 'conn' in locals():
@@ -690,7 +705,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
         )
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return None
     finally:
         if 'conn' in locals():
@@ -708,7 +723,7 @@ def send_message(recipient: str, message: str) -> Tuple[bool, str]:
             "message": message,
         }
         
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -742,7 +757,7 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -782,7 +797,7 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -815,27 +830,27 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             "chat_jid": chat_jid
         }
         
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
         
         if response.status_code == 200:
             result = response.json()
             if result.get("success", False):
                 path = result.get("path")
-                print(f"Media downloaded successfully: {path}")
+                logger.info(f"Media downloaded successfully: {path}")
                 return path
             else:
-                print(f"Download failed: {result.get('message', 'Unknown error')}")
+                logger.error(f"Download failed: {result.get('message', 'Unknown error')}")
                 return None
         else:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
+            logger.error(f"Error: HTTP {response.status_code} - {response.text}")
             return None
             
     except requests.RequestException as e:
-        print(f"Request error: {str(e)}")
+        logger.error(f"Request error: {str(e)}")
         return None
     except json.JSONDecodeError:
-        print(f"Error parsing response: {response.text}")
+        logger.error(f"Error parsing response: {response.text}")
         return None
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
+        logger.error(f"Unexpected error: {str(e)}")
         return None
