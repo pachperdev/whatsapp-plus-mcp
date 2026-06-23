@@ -2578,6 +2578,109 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group photo updated", "picture_id": pictureID})
 	}))
 
+	// --- Lote A3: solicitudes de ingreso a grupos (requieren admin) ---
+
+	// Handler: set group join approval mode (true = los ingresos requieren aprobación de admin)
+	http.HandleFunc("/api/set_group_join_approval", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req GroupToggleRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.GroupJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			return
+		}
+		if err := client.SetGroupJoinApprovalMode(context.Background(), jid, req.Enable); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "join approval mode updated"})
+	}))
+
+	// Handler: get group join requests (solicitudes pendientes de ingreso)
+	http.HandleFunc("/api/group_join_requests", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req GroupActionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.GroupJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			return
+		}
+		reqs, err := client.GetGroupRequestParticipants(context.Background(), jid)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		out := make([]map[string]interface{}, 0, len(reqs))
+		for _, p := range reqs {
+			out = append(out, map[string]interface{}{"jid": p.JID.String(), "requested_at": p.RequestedAt.Format(time.RFC3339)})
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "requests": out, "count": len(out)})
+	}))
+
+	// Handler: review group join request (approve/reject)
+	http.HandleFunc("/api/review_group_join_request", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req UpdateParticipantsRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.GroupJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			return
+		}
+		var action whatsmeow.ParticipantRequestChange
+		switch req.Action {
+		case "approve":
+			action = whatsmeow.ParticipantChangeApprove
+		case "reject":
+			action = whatsmeow.ParticipantChangeReject
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "action must be approve/reject"})
+			return
+		}
+		parts, err := parseParticipantJIDs(req.Participants)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		if len(parts) == 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "at least one participant required"})
+			return
+		}
+		result, err := client.UpdateGroupRequestParticipants(context.Background(), jid, parts, action)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		results := make([]map[string]interface{}, 0, len(result))
+		for _, p := range result {
+			results = append(results, map[string]interface{}{"jid": p.JID.String(), "error_code": p.Error})
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "action": req.Action, "results": results})
+	}))
+
 	// --- Lote A4: votar en encuestas ---
 
 	// Handler: vote in a poll

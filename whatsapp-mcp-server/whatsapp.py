@@ -1376,3 +1376,21 @@ def vote_poll(chat_jid: str, poll_message_id: str, options: List[str]) -> Tuple[
     entrantes de otros se descifran y guardan solos como mensajes 'poll_vote'."""
     d = _bridge_post("poll_vote", {"chat_jid": chat_jid, "poll_message_id": poll_message_id, "options": options})
     return d.get("success", False), d.get("message", "")
+
+
+# --- Lote A3: solicitudes de ingreso a grupos ---
+
+def set_group_join_approval(group_jid: str, enable: bool) -> Tuple[bool, str]:
+    """Activa/desactiva el modo de aprobación de ingresos al grupo (requiere admin)."""
+    d = _bridge_post("set_group_join_approval", {"group_jid": group_jid, "enable": enable})
+    return d.get("success", False), d.get("message", "")
+
+
+def get_group_join_requests(group_jid: str) -> Dict[str, Any]:
+    """Lista las solicitudes de ingreso pendientes de un grupo (jid + requested_at)."""
+    return _bridge_post("group_join_requests", {"group_jid": group_jid})
+
+
+def review_group_join_request(group_jid: str, participants: List[str], action: str) -> Dict[str, Any]:
+    """Aprueba o rechaza solicitudes de ingreso. action: approve|reject (requiere admin)."""
+    return _bridge_post("review_group_join_request", {"group_jid": group_jid, "participants": participants, "action": action})

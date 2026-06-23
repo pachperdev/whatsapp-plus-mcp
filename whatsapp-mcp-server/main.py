@@ -52,7 +52,10 @@ from whatsapp import (
     set_group_announce as whatsapp_set_group_announce,
     set_group_locked as whatsapp_set_group_locked,
     set_group_photo as whatsapp_set_group_photo,
-    vote_poll as whatsapp_vote_poll
+    vote_poll as whatsapp_vote_poll,
+    set_group_join_approval as whatsapp_set_group_join_approval,
+    get_group_join_requests as whatsapp_get_group_join_requests,
+    review_group_join_request as whatsapp_review_group_join_request
 )
 
 # Initialize FastMCP server
@@ -739,6 +742,37 @@ def vote_poll(chat_jid: str, poll_message_id: str, options: List[str]) -> Dict[s
     """
     success, status_message = whatsapp_vote_poll(chat_jid, poll_message_id, options)
     return {"success": success, "message": status_message}
+
+@mcp.tool()
+def set_group_join_approval(group_jid: str, enable: bool = True) -> Dict[str, Any]:
+    """Enable/disable group join-approval mode (new members need admin approval). Requires admin.
+
+    Args:
+        group_jid: The group JID
+        enable: True = joins require approval; False = anyone with the link joins directly
+    """
+    success, status_message = whatsapp_set_group_join_approval(group_jid, enable)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def get_group_join_requests(group_jid: str) -> Dict[str, Any]:
+    """List pending join requests for a group (each with jid and requested_at). Requires admin.
+
+    Args:
+        group_jid: The group JID
+    """
+    return whatsapp_get_group_join_requests(group_jid)
+
+@mcp.tool()
+def review_group_join_request(group_jid: str, participants: List[str], action: str) -> Dict[str, Any]:
+    """Approve or reject pending join requests for a group. Requires admin.
+
+    Args:
+        group_jid: The group JID
+        participants: List of requester phone numbers or JIDs to act on
+        action: "approve" or "reject"
+    """
+    return whatsapp_review_group_join_request(group_jid, participants, action)
 
 if __name__ == "__main__":
     # Initialize and run the server
