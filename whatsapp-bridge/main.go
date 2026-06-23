@@ -27,8 +27,10 @@ import (
 	"bytes"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	waBinary "go.mau.fi/whatsmeow/binary"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	waCommon "go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -318,6 +320,48 @@ type JoinGroupRequest struct {
 type BlockRequest struct {
 	JID    string `json:"jid"`
 	Action string `json:"action"` // block | unblock
+}
+
+// ChatStateRequest toggles mute/pin/archive/read on a chat
+type ChatStateRequest struct {
+	ChatJID  string `json:"chat_jid"`
+	Enable   bool   `json:"enable"`                  // true = mute/pin/archive/read ; false = lo contrario
+	Duration int    `json:"duration_hours,omitempty"` // solo mute: 0 = indefinido
+}
+
+// StarRequest stars/unstars a message
+type StarRequest struct {
+	ChatJID   string `json:"chat_jid"`
+	MessageID string `json:"message_id"`
+	Starred   bool   `json:"starred"`
+}
+
+// lastMsgKey arma el MessageKey + timestamp del ultimo mensaje de un chat,
+// requerido por BuildArchive y BuildMarkChatAsRead.
+func lastMsgKey(store *MessageStore, chatJID types.JID) (*waCommon.MessageKey, time.Time) {
+	var id, sender string
+	var isFromMe bool
+	var ts time.Time
+	err := store.db.QueryRow(
+		"SELECT id, sender, is_from_me, timestamp FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT 1",
+		chatJID.String(),
+	).Scan(&id, &sender, &isFromMe, &ts)
+	if err != nil {
+		return nil, time.Now()
+	}
+	key := &waCommon.MessageKey{
+		RemoteJID: proto.String(chatJID.String()),
+		FromMe:    proto.Bool(isFromMe),
+		ID:        proto.String(id),
+	}
+	if chatJID.Server == types.GroupServer && !isFromMe && sender != "" {
+		p := sender
+		if !strings.Contains(p, "@") {
+			p += "@lid"
+		}
+		key.Participant = proto.String(p)
+	}
+	return key, ts
 }
 
 // buildQuotedContext arma el ContextInfo para citar (reply) un mensaje previo,
@@ -1599,6 +1643,173 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": string(action) + "ed"})
+	}))
+
+	// Handler: mute / unmute chat
+	http.HandleFunc("/api/mute", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req ChatStateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			return
+		}
+		if err := client.SendAppState(context.Background(), appstate.BuildMute(jid, req.Enable, time.Duration(req.Duration)*time.Hour)); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "mute updated"})
+	}))
+
+	// Handler: pin / unpin chat
+	http.HandleFunc("/api/pin", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req ChatStateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			return
+		}
+		if err := client.SendAppState(context.Background(), appstate.BuildPin(jid, req.Enable)); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "pin updated"})
+	}))
+
+	// Handler: archive / unarchive chat
+	http.HandleFunc("/api/archive", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req ChatStateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			return
+		}
+		key, ts := lastMsgKey(messageStore, jid)
+		if err := client.SendAppState(context.Background(), appstate.BuildArchive(jid, req.Enable, ts, key)); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "archive updated"})
+	}))
+
+	// Handler: mark chat read / unread
+	http.HandleFunc("/api/mark_chat", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req ChatStateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			return
+		}
+		key, ts := lastMsgKey(messageStore, jid)
+		if err := client.SendAppState(context.Background(), appstate.BuildMarkChatAsRead(jid, req.Enable, ts, key)); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "chat read-state updated"})
+	}))
+
+	// Handler: star / unstar a message
+	http.HandleFunc("/api/star", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req StarRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			return
+		}
+		var senderRaw string
+		var fromMe bool
+		_ = messageStore.db.QueryRow("SELECT sender, is_from_me FROM messages WHERE id = ? LIMIT 1", req.MessageID).Scan(&senderRaw, &fromMe)
+		// BuildStar mapea sender==target -> "0" en el index, que es lo que WhatsApp
+		// espera en chats directos y para mensajes propios. Por eso el default es el
+		// propio chat (jid). Solo en grupos con mensaje de OTRO se usa el participante real.
+		senderJID := jid
+		if !fromMe && jid.Server == types.GroupServer && senderRaw != "" {
+			if strings.Contains(senderRaw, "@") {
+				if s, perr := types.ParseJID(senderRaw); perr == nil {
+					senderJID = s
+				}
+			} else {
+				senderJID = types.NewJID(senderRaw, types.HiddenUserServer)
+			}
+		}
+		if err := client.SendAppState(context.Background(), appstate.BuildStar(jid, senderJID, types.MessageID(req.MessageID), fromMe, req.Starred)); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "star updated"})
+	}))
+
+	// Handler: get chat settings (muted/pinned/archived)
+	http.HandleFunc("/api/chat_settings", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req ChatStateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			return
+		}
+		s, err := client.Store.ChatSettings.GetChatSettings(context.Background(), jid)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		muted := false
+		mutedUntil := ""
+		if !s.MutedUntil.IsZero() {
+			muted = s.MutedUntil.After(time.Now())
+			mutedUntil = s.MutedUntil.Format(time.RFC3339)
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true, "found": s.Found,
+			"muted": muted, "muted_until": mutedUntil,
+			"pinned": s.Pinned, "archived": s.Archived,
+		})
 	}))
 
 	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).

@@ -1232,3 +1232,40 @@ def unblock_contact(jid: str) -> Tuple[bool, str]:
     """Desbloquea un contacto."""
     d = _bridge_post("block", {"jid": jid, "action": "unblock"})
     return d.get("success", False), d.get("message", "")
+
+
+# --- Estado de chat (mute/pin/archive/read/star/settings) ---
+
+def mute_chat(chat_jid: str, mute: bool = True, duration_hours: int = 0) -> Tuple[bool, str]:
+    """Silencia/desilencia un chat. duration_hours=0 = indefinido."""
+    d = _bridge_post("mute", {"chat_jid": chat_jid, "enable": mute, "duration_hours": duration_hours})
+    return d.get("success", False), d.get("message", "")
+
+
+def pin_chat(chat_jid: str, pin: bool = True) -> Tuple[bool, str]:
+    """Fija/desfija un chat al tope."""
+    d = _bridge_post("pin", {"chat_jid": chat_jid, "enable": pin})
+    return d.get("success", False), d.get("message", "")
+
+
+def archive_chat(chat_jid: str, archive: bool = True) -> Tuple[bool, str]:
+    """Archiva/desarchiva un chat."""
+    d = _bridge_post("archive", {"chat_jid": chat_jid, "enable": archive})
+    return d.get("success", False), d.get("message", "")
+
+
+def mark_chat(chat_jid: str, read: bool = True) -> Tuple[bool, str]:
+    """Marca un chat entero como leido (read=True) o no leido (read=False)."""
+    d = _bridge_post("mark_chat", {"chat_jid": chat_jid, "enable": read})
+    return d.get("success", False), d.get("message", "")
+
+
+def star_message(chat_jid: str, message_id: str, starred: bool = True) -> Tuple[bool, str]:
+    """Destaca/quita destacado a un mensaje."""
+    d = _bridge_post("star", {"chat_jid": chat_jid, "message_id": message_id, "starred": starred})
+    return d.get("success", False), d.get("message", "")
+
+
+def get_chat_settings(chat_jid: str) -> Dict[str, Any]:
+    """Lee el estado de un chat: muted, muted_until, pinned, archived."""
+    return _bridge_post("chat_settings", {"chat_jid": chat_jid})

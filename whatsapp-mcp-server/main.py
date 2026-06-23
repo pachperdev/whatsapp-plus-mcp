@@ -32,7 +32,13 @@ from whatsapp import (
     set_group_name as whatsapp_set_group_name,
     set_group_topic as whatsapp_set_group_topic,
     block_contact as whatsapp_block_contact,
-    unblock_contact as whatsapp_unblock_contact
+    unblock_contact as whatsapp_unblock_contact,
+    mute_chat as whatsapp_mute_chat,
+    pin_chat as whatsapp_pin_chat,
+    archive_chat as whatsapp_archive_chat,
+    mark_chat as whatsapp_mark_chat,
+    star_message as whatsapp_star_message,
+    get_chat_settings as whatsapp_get_chat_settings
 )
 
 # Initialize FastMCP server
@@ -474,6 +480,72 @@ def unblock_contact(jid: str) -> Dict[str, Any]:
     """
     success, status_message = whatsapp_unblock_contact(jid)
     return {"success": success, "message": status_message}
+
+@mcp.tool()
+def mute_chat(chat_jid: str, mute: bool = True, duration_hours: int = 0) -> Dict[str, Any]:
+    """Mute or unmute a chat.
+
+    Args:
+        chat_jid: The chat/group JID
+        mute: True to mute, False to unmute
+        duration_hours: How long to mute (0 = indefinitely)
+    """
+    success, status_message = whatsapp_mute_chat(chat_jid, mute, duration_hours)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def pin_chat(chat_jid: str, pin: bool = True) -> Dict[str, Any]:
+    """Pin or unpin a chat to the top of the chat list.
+
+    Args:
+        chat_jid: The chat/group JID
+        pin: True to pin, False to unpin
+    """
+    success, status_message = whatsapp_pin_chat(chat_jid, pin)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def archive_chat(chat_jid: str, archive: bool = True) -> Dict[str, Any]:
+    """Archive or unarchive a chat.
+
+    Args:
+        chat_jid: The chat/group JID
+        archive: True to archive, False to unarchive
+    """
+    success, status_message = whatsapp_archive_chat(chat_jid, archive)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def mark_chat(chat_jid: str, read: bool = True) -> Dict[str, Any]:
+    """Mark an entire chat as read or unread.
+
+    Args:
+        chat_jid: The chat/group JID
+        read: True to mark as read, False to mark as unread
+    """
+    success, status_message = whatsapp_mark_chat(chat_jid, read)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def star_message(chat_jid: str, message_id: str, starred: bool = True) -> Dict[str, Any]:
+    """Star or unstar a message.
+
+    Args:
+        chat_jid: The chat JID containing the message
+        message_id: The ID of the message
+        starred: True to star, False to unstar
+    """
+    success, status_message = whatsapp_star_message(chat_jid, message_id, starred)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def get_chat_settings(chat_jid: str) -> Dict[str, Any]:
+    """Get a chat's settings: muted, muted_until, pinned, archived.
+
+    Args:
+        chat_jid: The chat/group JID
+    """
+    return whatsapp_get_chat_settings(chat_jid)
 
 if __name__ == "__main__":
     # Initialize and run the server
