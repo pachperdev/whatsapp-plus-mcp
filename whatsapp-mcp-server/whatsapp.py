@@ -1340,3 +1340,30 @@ def set_default_disappearing(duration: str = "off") -> Tuple[bool, str]:
     """Timer de mensajes temporales por defecto para chats NUEVOS. duration: off|24h|7d|90d."""
     d = _bridge_post("default_disappearing", {"duration": duration})
     return d.get("success", False), d.get("message", "")
+
+
+# --- Lote A2: administración de grupos ---
+
+def set_group_description(group_jid: str, description: str) -> Tuple[bool, str]:
+    """Cambia la descripcion de un grupo (requiere admin)."""
+    d = _bridge_post("set_group_description", {"group_jid": group_jid, "description": description})
+    return d.get("success", False), d.get("message", "")
+
+
+def set_group_announce(group_jid: str, enable: bool) -> Tuple[bool, str]:
+    """Modo announce: si enable, solo admins pueden enviar mensajes (requiere admin)."""
+    d = _bridge_post("set_group_announce", {"group_jid": group_jid, "enable": enable})
+    return d.get("success", False), d.get("message", "")
+
+
+def set_group_locked(group_jid: str, enable: bool) -> Tuple[bool, str]:
+    """Modo locked: si enable, solo admins pueden editar la info del grupo (requiere admin)."""
+    d = _bridge_post("set_group_locked", {"group_jid": group_jid, "enable": enable})
+    return d.get("success", False), d.get("message", "")
+
+
+def set_group_photo(group_jid: str, image_path: str) -> Dict[str, Any]:
+    """Cambia la foto de un grupo desde una imagen local. Requiere admin.
+    La imagen DEBE ser un JPEG CUADRADO (ej. 640x640); WhatsApp rechaza no-cuadradas y
+    whatsmeow no redimensiona (recortar antes, ej. macOS `sips -z 640 640 in.jpg --out sq.jpg`)."""
+    return _bridge_post("set_group_photo", {"group_jid": group_jid, "image_path": image_path})

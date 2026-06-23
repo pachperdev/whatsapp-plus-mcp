@@ -445,6 +445,26 @@ type DefaultDisappearingRequest struct {
 	Duration string `json:"duration"` // off | 24h | 7d | 90d
 }
 
+// --- Lote A2: administración de grupos ---
+
+// SetGroupDescriptionRequest cambia la descripción de un grupo
+type SetGroupDescriptionRequest struct {
+	GroupJID    string `json:"group_jid"`
+	Description string `json:"description"`
+}
+
+// GroupToggleRequest activa/desactiva un modo de grupo (announce/locked)
+type GroupToggleRequest struct {
+	GroupJID string `json:"group_jid"`
+	Enable   bool   `json:"enable"`
+}
+
+// SetGroupPhotoRequest cambia la foto de un grupo (lee la imagen del path; debe ser JPEG)
+type SetGroupPhotoRequest struct {
+	GroupJID  string `json:"group_jid"`
+	ImagePath string `json:"image_path"`
+}
+
 // botStatus mantiene el estado de conexion/sesion/ban del cliente para /api/status
 // y para pausar envios ante un ban temporal. Thread-safe (lo escribe el event handler).
 type botStatus struct {
@@ -2418,6 +2438,107 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "default disappearing timer set", "duration": req.Duration})
+	}))
+
+	// --- Lote A2: administración de grupos (requieren ser admin) ---
+
+	// Handler: set group description
+	http.HandleFunc("/api/set_group_description", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req SetGroupDescriptionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.GroupJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			return
+		}
+		if err := client.SetGroupDescription(context.Background(), jid, req.Description); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group description updated"})
+	}))
+
+	// Handler: set group announce (true = solo admins pueden enviar mensajes)
+	http.HandleFunc("/api/set_group_announce", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req GroupToggleRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.GroupJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			return
+		}
+		if err := client.SetGroupAnnounce(context.Background(), jid, req.Enable); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group announce updated"})
+	}))
+
+	// Handler: set group locked (true = solo admins pueden editar info del grupo)
+	http.HandleFunc("/api/set_group_locked", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req GroupToggleRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.GroupJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			return
+		}
+		if err := client.SetGroupLocked(context.Background(), jid, req.Enable); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group locked updated"})
+	}))
+
+	// Handler: set group photo (lee la imagen del path; WhatsApp requiere JPEG)
+	http.HandleFunc("/api/set_group_photo", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req SetGroupPhotoRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.GroupJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			return
+		}
+		avatar, err := os.ReadFile(req.ImagePath)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": fmt.Sprintf("cannot read image: %v", err)})
+			return
+		}
+		pictureID, err := client.SetGroupPhoto(context.Background(), jid, avatar)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group photo updated", "picture_id": pictureID})
 	}))
 
 	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).

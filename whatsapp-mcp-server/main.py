@@ -47,7 +47,11 @@ from whatsapp import (
     set_status_message as whatsapp_set_status_message,
     get_business_profile as whatsapp_get_business_profile,
     get_user_devices as whatsapp_get_user_devices,
-    set_default_disappearing as whatsapp_set_default_disappearing
+    set_default_disappearing as whatsapp_set_default_disappearing,
+    set_group_description as whatsapp_set_group_description,
+    set_group_announce as whatsapp_set_group_announce,
+    set_group_locked as whatsapp_set_group_locked,
+    set_group_photo as whatsapp_set_group_photo
 )
 
 # Initialize FastMCP server
@@ -671,6 +675,53 @@ def set_default_disappearing(duration: str = "off") -> Dict[str, Any]:
     """
     success, status_message = whatsapp_set_default_disappearing(duration)
     return {"success": success, "message": status_message}
+
+@mcp.tool()
+def set_group_description(group_jid: str, description: str) -> Dict[str, Any]:
+    """Set a group's description/topic text. Requires you to be a group admin.
+
+    Args:
+        group_jid: The group JID
+        description: The new description text
+    """
+    success, status_message = whatsapp_set_group_description(group_jid, description)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def set_group_announce(group_jid: str, enable: bool = True) -> Dict[str, Any]:
+    """Set group announce mode. When enabled, ONLY admins can send messages. Requires admin.
+
+    Args:
+        group_jid: The group JID
+        enable: True = only admins can post; False = everyone can post
+    """
+    success, status_message = whatsapp_set_group_announce(group_jid, enable)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def set_group_locked(group_jid: str, enable: bool = True) -> Dict[str, Any]:
+    """Set group locked mode. When enabled, ONLY admins can edit group info (name/photo/description). Requires admin.
+
+    Args:
+        group_jid: The group JID
+        enable: True = only admins can edit info; False = everyone can edit
+    """
+    success, status_message = whatsapp_set_group_locked(group_jid, enable)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def set_group_photo(group_jid: str, image_path: str) -> Dict[str, Any]:
+    """Set a group's photo from a local image file. Requires admin.
+
+    The image MUST be a SQUARE JPEG (e.g. 640x640). WhatsApp rejects non-square images and
+    whatsmeow does not resize, so crop/resize beforehand
+    (e.g. macOS: `sips -z 640 640 in.jpg --out square.jpg`).
+
+    Args:
+        group_jid: The group JID
+        image_path: Absolute path to a SQUARE JPEG image
+    """
+    return whatsapp_set_group_photo(group_jid, image_path)
 
 if __name__ == "__main__":
     # Initialize and run the server
