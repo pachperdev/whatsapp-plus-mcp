@@ -357,6 +357,12 @@ type UpdateParticipantsRequest struct {
 	Action       string   `json:"action"` // add | remove | promote | demote
 }
 
+// DisappearingRequest setea el timer de mensajes temporales de un chat
+type DisappearingRequest struct {
+	ChatJID  string `json:"chat_jid"`
+	Duration string `json:"duration"` // off | 24h | 7d | 90d
+}
+
 // lastMsgKey arma el MessageKey + timestamp del ultimo mensaje de un chat,
 // requerido por BuildArchive y BuildMarkChatAsRead.
 func lastMsgKey(store *MessageStore, chatJID types.JID) (*waCommon.MessageKey, time.Time) {
@@ -2023,6 +2029,35 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			})
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "action": req.Action, "results": results})
+	}))
+
+	// Handler: set disappearing-messages timer (off/24h/7d/90d)
+	http.HandleFunc("/api/disappearing", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req DisappearingRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			return
+		}
+		timer, ok := whatsmeow.ParseDisappearingTimerString(req.Duration)
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "duration must be one of: off, 24h, 7d, 90d"})
+			return
+		}
+		if err := client.SetDisappearingTimer(context.Background(), jid, timer, time.Time{}); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "disappearing timer set", "duration": req.Duration})
 	}))
 
 	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).

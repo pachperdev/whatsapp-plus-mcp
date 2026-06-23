@@ -41,7 +41,8 @@ from whatsapp import (
     get_chat_settings as whatsapp_get_chat_settings,
     request_more_history as whatsapp_request_more_history,
     create_group as whatsapp_create_group,
-    update_group_participants as whatsapp_update_group_participants
+    update_group_participants as whatsapp_update_group_participants,
+    set_disappearing_messages as whatsapp_set_disappearing_messages
 )
 
 # Initialize FastMCP server
@@ -599,6 +600,19 @@ def update_group_participants(group_jid: str, participants: List[str], action: s
         action: One of "add", "remove", "promote", "demote"
     """
     return whatsapp_update_group_participants(group_jid, participants, action)
+
+@mcp.tool()
+def set_disappearing_messages(chat_jid: str, duration: str = "off") -> Dict[str, Any]:
+    """Set the disappearing-messages timer for a chat or group.
+
+    WhatsApp only allows preset values. New messages auto-delete after the chosen period.
+
+    Args:
+        chat_jid: The chat/group JID
+        duration: One of "off", "24h", "7d", "90d"
+    """
+    success, status_message = whatsapp_set_disappearing_messages(chat_jid, duration)
+    return {"success": success, "message": status_message}
 
 if __name__ == "__main__":
     # Initialize and run the server

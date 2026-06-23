@@ -1289,3 +1289,9 @@ def create_group(name: str, participants: List[str]) -> Dict[str, Any]:
 def update_group_participants(group_jid: str, participants: List[str], action: str) -> Dict[str, Any]:
     """Agrega/quita/promueve/degrada participantes. action: add|remove|promote|demote (requiere admin)."""
     return _bridge_post("update_participants", {"group_jid": group_jid, "participants": participants, "action": action})
+
+
+def set_disappearing_messages(chat_jid: str, duration: str = "off") -> Tuple[bool, str]:
+    """Setea el timer de mensajes temporales. duration: off|24h|7d|90d (presets de WhatsApp)."""
+    d = _bridge_post("disappearing", {"chat_jid": chat_jid, "duration": duration})
+    return d.get("success", False), d.get("message", "")
