@@ -795,7 +795,9 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
             
         return Chat(
             jid=chat_data[0],
-            name=chat_data[1],
+            # Resolver el nombre del contacto (lid->numero->libreta) como las otras tools;
+            # fallback al nombre guardado (grupos / desconocidos).
+            name=resolve_contact_name(chat_data[0]) or chat_data[1],
             last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
             last_message=chat_data[3],
             last_sender=chat_data[4],
