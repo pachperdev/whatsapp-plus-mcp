@@ -4,6 +4,37 @@ Auditoría a fondo de `whatsapp-bridge` (Go, 1367 ln) + `whatsapp-mcp-server` (P
 
 ---
 
+## ✅ Estado de implementación (2026-06-22, fork `mauricioDevApp/whatsapp-mcp`)
+
+Resueltos en esta tanda de mantenimiento — todos commiteados en `main` y validados:
+
+| Ítem | Estado | Commit |
+|---|---|---|
+| whatsmeow 2026 + fix 405 | ✅ | `dec7d74` |
+| Resolución de nombres (lid→nombre) | ✅ validado | `303b9d5` |
+| **T1** captura en vivo (history-sync async) | ✅ validado en vivo | `46eb0bf` |
+| **T2** SQLite WAL + busy_timeout | ✅ validado en vivo | `46eb0bf` |
+| **T3** persistir salientes | ✅ validado en vivo | `0340f28` |
+| **T4** requests con timeout | ✅ | `889bcfa` |
+| **T5** logging a stderr (no rompe stdio MCP) | ✅ | `889bcfa` |
+| **T6** seguridad (loopback + token + sandbox media + timeouts) | ✅ validado en vivo | `577117b` |
+| **T7** cache de contactos con TTL + `refresh_contacts` | ✅ validado | `cd8f55b` |
+| **T8** salida estructurada de `list_messages` + consistencia de nombres | ✅ validado | `cd8f55b` |
+| Unificar chats lid/número en `list_chats` | ✅ validado en vivo | `e71de32` |
+| Tools nuevas: `list_groups`, `mark_as_read`, `react_to_message` | ✅ validado en vivo | `f845430` |
+
+### Pendiente (no crítico)
+- **M1** reconexión duplicada (auto-reconnect de whatsmeow vs handler manual de `Disconnected`).
+- **M2** batch transaction en history-sync (los inserts siguen uno por uno).
+- **M3** índices en `messages(chat_jid, timestamp)`.
+- **M4** path traversal en `downloadMedia` (filename del remitente) — mitigar con `filepath.Base`.
+- **M6** `_load_contact_index` ignora `our_jid` (latente con multi-cuenta).
+- **M7** `get_direct_chat_by_contact` con `LIKE '%phone%'` (falsos positivos).
+- Resto de §2/§3 (menores) y más tools (`edit_message`, `delete_message`, `get_profile_picture`, presencia/typing, `get_unread`).
+- **Nota de alcance:** el sandbox de media, `mark_as_read` y `react_to_message` asumen **chats directos**; en grupos el `sender` del participante queda acotado.
+
+---
+
 ## 0. Hallazgo de contexto (acción urgente)
 
 **El upstream está ABANDONADO.** El `main` de `github.com/lharries/whatsapp-mcp` sigue en el mismo commit `7d6a06d` (13-jul-2025) que nuestro clone — **0 commits de código en ~11 meses**, 186 issues abiertos, sin merges desde abril 2025 (el propio issue #220 pide traspaso de mantenimiento). Su whatsmeow sigue en marzo-2025 → cualquiera que clone hoy obtiene el error **"405 Client outdated"** (app rota).
