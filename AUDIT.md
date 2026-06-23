@@ -39,7 +39,8 @@ Resueltos en esta tanda de mantenimiento — todos commiteados en `main` y valid
 - **M2** batch transaction en history-sync (inserts uno por uno). **Ya mitigado** por T1 (goroutine) + T2 (WAL): no bloquea; es optimización, no se hizo por riesgo/beneficio.
 - **M6** `_load_contact_index` ignora `our_jid` — latente, **sin impacto con una sola cuenta** vinculada.
 - Menores: adaptador `datetime`→str de sqlite deprecado en Python 3.12; paginación `OFFSET` sin tie-breaker.
-- Tools extra: `edit_message`, `delete_message`, `get_profile_picture`, presencia/typing, `get_unread`.
+- Tools extra: `edit_message`, `get_profile_picture`, presencia/typing, `get_unread`.
+- **`delete_message`** (revoke): whatsmeow lo soporta (`RevokeMessage`/`BuildRevoke`), pero **NO se implementó a propósito** — eliminar mensajes "para todos" es una acción irreversible que debe disparar el usuario, no el asistente (política de no-borrado). Si se quiere la capacidad, el endpoint queda por hacer pero el borrado lo ejecuta el usuario.
 - **Nota de alcance:** el sandbox de media, `mark_as_read` y `react_to_message` asumen **chats directos**; en grupos el `sender` del participante queda acotado.
 
 ---
@@ -50,7 +51,7 @@ Resueltos en esta tanda de mantenimiento — todos commiteados en `main` y valid
 
 **Nuestro clone es la versión ADELANTADA**: ya tiene whatsmeow 2026 (fix 405), migración a `context.Context`, reconexión automática y la resolución de nombres lid→número. **Pero esos cambios viven solo en el working tree, SIN commitear** → un `git checkout` accidental los borra.
 
-➡️ **Acción inmediata:** commitear los cambios locales en una branch propia y apuntar `origin` a un fork. NO actualizar al upstream (sería un downgrade).
+➡️ **Acción inmediata:** commitear los cambios locales en una branch propia y apuntar `origin` a un fork. NO actualizar al upstream (sería un downgrade). **✅ HECHO:** fork `mauricioDevApp/whatsapp-mcp` creado, `origin`→fork, push a `upstream` deshabilitado, todo commiteado en `main`.
 
 ---
 
