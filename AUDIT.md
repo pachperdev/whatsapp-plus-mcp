@@ -93,6 +93,7 @@ Client son **wrappers de baja complejidad** (handler REST en el bridge + tool Py
 - `/api/status` endpoint: logged-in / necesita re-escanear QR / temp-banned.
 - Procesar `events.Receipt` (delivered/read) → saber si leyeron + base para `get_unread_chats`.
 - **M6** `_load_contact_index` ignora `our_jid` (latente con multi-cuenta).
+- **`block_contact`/`unblock_contact`**: implementadas con `UpdateBlocklist` (API oficial) pero WhatsApp devuelve `400 bad-request` con número **y** con `@lid` (validado 2026-06-22). No es bug del bridge — es upstream (whatsmeow/protocolo). Pendiente: investigar el IQ de blocklist (¿atributo faltante? ¿whatsmeow más nuevo?).
 - Menores: adaptador `datetime`→str deprecado en Python 3.12; paginación `OFFSET` sin tie-breaker.
 - Alcance: `mark_as_read`/`react`/sandbox de media asumen chats directos; grupos = sender acotado.
 
