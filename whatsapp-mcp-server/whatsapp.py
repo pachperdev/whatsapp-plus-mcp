@@ -1042,3 +1042,67 @@ def react_to_message(chat_jid: str, message_id: str, emoji: str) -> Tuple[bool, 
     except (requests.RequestException, ValueError) as e:
         logger.error(f"react_to_message error: {e}")
         return False, str(e)
+
+
+def edit_message(chat_jid: str, message_id: str, new_text: str) -> Tuple[bool, str]:
+    """Edita un mensaje propio ya enviado (ventana ~20 min)."""
+    try:
+        resp = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/edit",
+            json={"chat_jid": chat_jid, "message_id": message_id, "new_text": new_text},
+            headers={"X-Auth-Token": _bridge_token()},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        return data.get("success", False), data.get("message", "")
+    except (requests.RequestException, ValueError) as e:
+        logger.error(f"edit_message error: {e}")
+        return False, str(e)
+
+
+def delete_message(chat_jid: str, message_id: str, sender: str = "") -> Tuple[bool, str]:
+    """Elimina un mensaje 'para todos' (revoke). sender vacio = mensaje propio."""
+    try:
+        resp = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/revoke",
+            json={"chat_jid": chat_jid, "message_id": message_id, "sender": sender},
+            headers={"X-Auth-Token": _bridge_token()},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        return data.get("success", False), data.get("message", "")
+    except (requests.RequestException, ValueError) as e:
+        logger.error(f"delete_message error: {e}")
+        return False, str(e)
+
+
+def send_typing(chat_jid: str, state: str = "composing", media: str = "") -> Tuple[bool, str]:
+    """Envia presencia de chat: 'composing' (escribiendo) o 'paused'; media '' o 'audio'."""
+    try:
+        resp = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/typing",
+            json={"chat_jid": chat_jid, "state": state, "media": media},
+            headers={"X-Auth-Token": _bridge_token()},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        return data.get("success", False), data.get("message", "")
+    except (requests.RequestException, ValueError) as e:
+        logger.error(f"send_typing error: {e}")
+        return False, str(e)
+
+
+def send_poll(chat_jid: str, question: str, options: List[str], selectable_count: int = 1) -> Tuple[bool, str]:
+    """Envia una encuesta. selectable_count=1 (opcion unica) o >1 (multiple)."""
+    try:
+        resp = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/poll",
+            json={"chat_jid": chat_jid, "question": question, "options": options, "selectable_count": selectable_count},
+            headers={"X-Auth-Token": _bridge_token()},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        return data.get("success", False), data.get("message", "")
+    except (requests.RequestException, ValueError) as e:
+        logger.error(f"send_poll error: {e}")
+        return False, str(e)

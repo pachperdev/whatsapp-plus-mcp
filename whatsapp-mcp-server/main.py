@@ -16,7 +16,11 @@ from whatsapp import (
     refresh_contacts as whatsapp_refresh_contacts,
     list_groups as whatsapp_list_groups,
     mark_as_read as whatsapp_mark_as_read,
-    react_to_message as whatsapp_react_to_message
+    react_to_message as whatsapp_react_to_message,
+    edit_message as whatsapp_edit_message,
+    delete_message as whatsapp_delete_message,
+    send_typing as whatsapp_send_typing,
+    send_poll as whatsapp_send_poll
 )
 
 # Initialize FastMCP server
@@ -288,6 +292,55 @@ def react_to_message(chat_jid: str, message_id: str, emoji: str) -> Dict[str, An
         emoji: The emoji to react with (e.g. "\U0001f44d", "❤️")
     """
     success, status_message = whatsapp_react_to_message(chat_jid, message_id, emoji)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def edit_message(chat_jid: str, message_id: str, new_text: str) -> Dict[str, Any]:
+    """Edit one of your own previously sent messages (within WhatsApp's ~20 min window).
+
+    Args:
+        chat_jid: The JID of the chat containing the message
+        message_id: The ID of the message to edit (must be your own)
+        new_text: The new text content
+    """
+    success, status_message = whatsapp_edit_message(chat_jid, message_id, new_text)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def delete_message(chat_jid: str, message_id: str, sender: str = "") -> Dict[str, Any]:
+    """Delete a message for everyone (revoke). Leave sender empty for your own message.
+
+    Args:
+        chat_jid: The JID of the chat containing the message
+        message_id: The ID of the message to delete
+        sender: JID of the original sender (only needed to delete someone else's message as group admin)
+    """
+    success, status_message = whatsapp_delete_message(chat_jid, message_id, sender)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def send_typing(chat_jid: str, state: str = "composing", media: str = "") -> Dict[str, Any]:
+    """Send a chat presence indicator (shows "typing…" / "recording audio…").
+
+    Args:
+        chat_jid: The JID of the chat
+        state: "composing" (typing) or "paused" (stopped)
+        media: "" for text typing, or "audio" for recording-audio indicator
+    """
+    success, status_message = whatsapp_send_typing(chat_jid, state, media)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def send_poll(chat_jid: str, question: str, options: List[str], selectable_count: int = 1) -> Dict[str, Any]:
+    """Send a poll to a chat or group.
+
+    Args:
+        chat_jid: The JID of the chat/group
+        question: The poll question
+        options: List of answer options (at least 2)
+        selectable_count: 1 for single-choice (default), >1 to allow multiple answers
+    """
+    success, status_message = whatsapp_send_poll(chat_jid, question, options, selectable_count)
     return {"success": success, "message": status_message}
 
 if __name__ == "__main__":

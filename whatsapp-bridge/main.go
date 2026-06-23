@@ -243,6 +243,35 @@ type ReactRequest struct {
 	Emoji     string `json:"emoji"`
 }
 
+// EditRequest edits a previously sent message (own message, ~20 min window)
+type EditRequest struct {
+	ChatJID   string `json:"chat_jid"`
+	MessageID string `json:"message_id"`
+	NewText   string `json:"new_text"`
+}
+
+// RevokeRequest deletes a message for everyone
+type RevokeRequest struct {
+	ChatJID   string `json:"chat_jid"`
+	MessageID string `json:"message_id"`
+	Sender    string `json:"sender,omitempty"`
+}
+
+// TypingRequest sends a chat presence (typing / recording)
+type TypingRequest struct {
+	ChatJID string `json:"chat_jid"`
+	State   string `json:"state"` // composing | paused
+	Media   string `json:"media,omitempty"` // "" (text) | audio
+}
+
+// PollRequest sends a poll message
+type PollRequest struct {
+	ChatJID         string   `json:"chat_jid"`
+	Question        string   `json:"question"`
+	Options         []string `json:"options"`
+	SelectableCount int      `json:"selectable_count,omitempty"`
+}
+
 // Function to send a WhatsApp message
 func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string) (bool, string) {
 	if !client.IsConnected() {
@@ -1012,6 +1041,125 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "reaction sent"})
+	}))
+
+	// Handler: edit a previously sent message
+	http.HandleFunc("/api/edit", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req EditRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		chat, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			return
+		}
+		newContent := &waProto.Message{Conversation: proto.String(req.NewText)}
+		edit := client.BuildEdit(chat, types.MessageID(req.MessageID), newContent)
+		if _, err := client.SendMessage(context.Background(), chat, edit); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "message edited"})
+	}))
+
+	// Handler: revoke (delete for everyone) a message
+	http.HandleFunc("/api/revoke", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req RevokeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		chat, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			return
+		}
+		var sender types.JID // vacio = revocar mensaje propio
+		if req.Sender != "" {
+			if s, perr := types.ParseJID(req.Sender); perr == nil {
+				sender = s
+			}
+		}
+		revoke := client.BuildRevoke(chat, sender, types.MessageID(req.MessageID))
+		if _, err := client.SendMessage(context.Background(), chat, revoke); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "message revoked"})
+	}))
+
+	// Handler: send chat presence (typing / recording)
+	http.HandleFunc("/api/typing", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req TypingRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		chat, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			return
+		}
+		state := types.ChatPresenceComposing
+		if req.State == "paused" {
+			state = types.ChatPresencePaused
+		}
+		media := types.ChatPresenceMediaText
+		if req.Media == "audio" {
+			media = types.ChatPresenceMediaAudio
+		}
+		if err := client.SendChatPresence(context.Background(), chat, state, media); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "presence sent"})
+	}))
+
+	// Handler: send a poll
+	http.HandleFunc("/api/poll", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req PollRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		chat, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			return
+		}
+		if req.Question == "" || len(req.Options) < 2 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "poll needs a question and at least 2 options"})
+			return
+		}
+		selectable := req.SelectableCount
+		if selectable < 1 {
+			selectable = 1
+		}
+		poll := client.BuildPollCreation(req.Question, req.Options, selectable)
+		if _, err := client.SendMessage(context.Background(), chat, poll); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "poll sent"})
 	}))
 
 	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).
