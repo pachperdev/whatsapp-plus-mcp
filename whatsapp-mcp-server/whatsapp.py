@@ -756,13 +756,23 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
 
 
 def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
-    """Get chat metadata by sender phone number."""
+    """Get chat metadata by sender phone number.
+
+    Busca por jid exacto (numero@s.whatsapp.net) y por el lid mapeado a ese numero,
+    en vez de un LIKE '%phone%' (que daba falsos positivos y no cubria los @lid).
+    """
+    pn = _normalize_phone(sender_phone_number)
+    _, lid_to_pn = _get_contact_index()
+    candidate_jids = [f"{pn}@s.whatsapp.net"]
+    for lid, mapped_pn in lid_to_pn.items():
+        if mapped_pn == pn:
+            candidate_jids.append(f"{lid}@lid")
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
         cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT 
+        placeholders = ",".join(["?"] * len(candidate_jids))
+        cursor.execute(f"""
+            SELECT
                 c.jid,
                 c.name,
                 c.last_message_time,
@@ -770,20 +780,21 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
                 m.sender as last_sender,
                 m.is_from_me as last_is_from_me
             FROM chats c
-            LEFT JOIN messages m ON c.jid = m.chat_jid 
+            LEFT JOIN messages m ON c.jid = m.chat_jid
                 AND c.last_message_time = m.timestamp
-            WHERE c.jid LIKE ? AND c.jid NOT LIKE '%@g.us'
+            WHERE c.jid IN ({placeholders})
+            ORDER BY c.last_message_time DESC
             LIMIT 1
-        """, (f"%{sender_phone_number}%",))
-        
+        """, tuple(candidate_jids))
+
         chat_data = cursor.fetchone()
-        
+
         if not chat_data:
             return None
-            
+
         return Chat(
             jid=chat_data[0],
-            name=chat_data[1],
+            name=resolve_contact_name(chat_data[0]) or chat_data[1],
             last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
             last_message=chat_data[3],
             last_sender=chat_data[4],
@@ -860,20 +871,22 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
         return False, f"Unexpected error: {str(e)}"
 
 def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
+    temp_to_cleanup = None
     try:
         # Validate input
         if not recipient:
             return False, "Recipient must be provided"
-        
+
         if not media_path:
             return False, "Media path must be provided"
-        
+
         if not os.path.isfile(media_path):
             return False, f"Media file not found: {media_path}"
 
         if not media_path.endswith(".ogg"):
             try:
                 media_path = audio.convert_to_opus_ogg_temp(media_path)
+                temp_to_cleanup = media_path
             except Exception as e:
                 return False, f"Error converting file to opus ogg. You likely need to install ffmpeg: {str(e)}"
         
@@ -898,6 +911,13 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
         return False, f"Error parsing response: {response.text}"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
+    finally:
+        # Borrar el .ogg temporal creado por la conversion (evita fuga en /tmp)
+        if temp_to_cleanup:
+            try:
+                os.remove(temp_to_cleanup)
+            except OSError:
+                pass
 
 def download_media(message_id: str, chat_jid: str) -> Optional[str]:
     """Download media from a message and return the local file path.

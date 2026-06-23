@@ -29,8 +29,8 @@ def convert_to_opus_ogg(input_file, output_file=None, bitrate="32k", sample_rate
     
     # Ensure the output directory exists
     output_dir = os.path.dirname(output_file)
-    if output_dir and not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
     
     # Build the ffmpeg command
     cmd = [
