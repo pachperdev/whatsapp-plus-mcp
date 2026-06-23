@@ -13,7 +13,10 @@ from whatsapp import (
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
     download_media as whatsapp_download_media,
-    refresh_contacts as whatsapp_refresh_contacts
+    refresh_contacts as whatsapp_refresh_contacts,
+    list_groups as whatsapp_list_groups,
+    mark_as_read as whatsapp_mark_as_read,
+    react_to_message as whatsapp_react_to_message
 )
 
 # Initialize FastMCP server
@@ -255,6 +258,37 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
             "success": False,
             "message": "Failed to download media"
         }
+
+@mcp.tool()
+def list_groups() -> List[Dict[str, Any]]:
+    """List all WhatsApp groups you are a member of.
+
+    Returns each group's jid, name and participant_count.
+    """
+    return whatsapp_list_groups()
+
+@mcp.tool()
+def mark_as_read(chat_jid: str, message_ids: List[str]) -> Dict[str, Any]:
+    """Mark one or more messages as read in a chat (works for direct chats).
+
+    Args:
+        chat_jid: The JID of the chat
+        message_ids: List of message IDs to mark as read
+    """
+    success, status_message = whatsapp_mark_as_read(chat_jid, message_ids)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def react_to_message(chat_jid: str, message_id: str, emoji: str) -> Dict[str, Any]:
+    """React to a message with an emoji (works for direct chats / received messages).
+
+    Args:
+        chat_jid: The JID of the chat containing the message
+        message_id: The ID of the message to react to
+        emoji: The emoji to react with (e.g. "\U0001f44d", "❤️")
+    """
+    success, status_message = whatsapp_react_to_message(chat_jid, message_id, emoji)
+    return {"success": success, "message": status_message}
 
 if __name__ == "__main__":
     # Initialize and run the server

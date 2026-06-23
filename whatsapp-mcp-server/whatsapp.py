@@ -935,3 +935,50 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         return None
+
+
+def list_groups() -> List[Dict[str, Any]]:
+    """Lista los grupos de WhatsApp de los que el usuario es miembro."""
+    try:
+        resp = requests.get(
+            f"{WHATSAPP_API_BASE_URL}/groups",
+            headers={"X-Auth-Token": _bridge_token()},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        return data.get("groups", []) if data.get("success") else []
+    except (requests.RequestException, ValueError) as e:
+        logger.error(f"list_groups error: {e}")
+        return []
+
+
+def mark_as_read(chat_jid: str, message_ids: List[str]) -> Tuple[bool, str]:
+    """Marca uno o mas mensajes como leidos (pensado para chats directos)."""
+    try:
+        resp = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/mark_read",
+            json={"chat_jid": chat_jid, "message_ids": message_ids},
+            headers={"X-Auth-Token": _bridge_token()},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        return data.get("success", False), data.get("message", "")
+    except (requests.RequestException, ValueError) as e:
+        logger.error(f"mark_as_read error: {e}")
+        return False, str(e)
+
+
+def react_to_message(chat_jid: str, message_id: str, emoji: str) -> Tuple[bool, str]:
+    """Reacciona a un mensaje con un emoji (chats directos / mensajes recibidos)."""
+    try:
+        resp = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/react",
+            json={"chat_jid": chat_jid, "message_id": message_id, "emoji": emoji},
+            headers={"X-Auth-Token": _bridge_token()},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        return data.get("success", False), data.get("message", "")
+    except (requests.RequestException, ValueError) as e:
+        logger.error(f"react_to_message error: {e}")
+        return False, str(e)

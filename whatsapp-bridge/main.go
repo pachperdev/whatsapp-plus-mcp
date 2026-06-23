@@ -225,6 +225,21 @@ type SendMessageRequest struct {
 	MediaPath string `json:"media_path,omitempty"`
 }
 
+// MarkReadRequest marks one or more messages as read
+type MarkReadRequest struct {
+	ChatJID    string   `json:"chat_jid"`
+	MessageIDs []string `json:"message_ids"`
+	Sender     string   `json:"sender,omitempty"`
+}
+
+// ReactRequest adds an emoji reaction to a message
+type ReactRequest struct {
+	ChatJID   string `json:"chat_jid"`
+	MessageID string `json:"message_id"`
+	Sender    string `json:"sender,omitempty"`
+	Emoji     string `json:"emoji"`
+}
+
 // Function to send a WhatsApp message
 func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string) (bool, string) {
 	if !client.IsConnected() {
@@ -898,6 +913,96 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			Filename: filename,
 			Path:     path,
 		})
+	}))
+
+	// Handler: list joined groups
+	http.HandleFunc("/api/groups", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		groups, err := client.GetJoinedGroups(context.Background())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		type groupOut struct {
+			JID              string `json:"jid"`
+			Name             string `json:"name"`
+			ParticipantCount int    `json:"participant_count"`
+			Owner            string `json:"owner,omitempty"`
+		}
+		out := make([]groupOut, 0, len(groups))
+		for _, g := range groups {
+			out = append(out, groupOut{
+				JID:              g.JID.String(),
+				Name:             g.Name,
+				ParticipantCount: g.ParticipantCount,
+				Owner:            g.OwnerJID.String(),
+			})
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "groups": out})
+	}))
+
+	// Handler: mark messages as read
+	http.HandleFunc("/api/mark_read", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req MarkReadRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		chat, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			return
+		}
+		sender := chat // chats directos: el remitente es el propio chat
+		if req.Sender != "" {
+			if s, perr := types.ParseJID(req.Sender); perr == nil {
+				sender = s
+			}
+		}
+		ids := make([]types.MessageID, 0, len(req.MessageIDs))
+		for _, id := range req.MessageIDs {
+			ids = append(ids, types.MessageID(id))
+		}
+		if err := client.MarkRead(context.Background(), ids, time.Now(), chat, sender); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "marked as read"})
+	}))
+
+	// Handler: react to a message with an emoji
+	http.HandleFunc("/api/react", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req ReactRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		chat, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			return
+		}
+		sender := chat
+		if req.Sender != "" {
+			if s, perr := types.ParseJID(req.Sender); perr == nil {
+				sender = s
+			}
+		}
+		reaction := client.BuildReaction(chat, sender, types.MessageID(req.MessageID), req.Emoji)
+		if _, err := client.SendMessage(context.Background(), chat, reaction); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "reaction sent"})
 	}))
 
 	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).
