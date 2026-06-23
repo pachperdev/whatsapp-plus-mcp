@@ -494,11 +494,11 @@ def list_chats(
             
         where_clauses = []
         params = []
-        
-        if query:
-            where_clauses.append("(LOWER(chats.name) LIKE LOWER(?) OR chats.jid LIKE ?)")
-            params.extend([f"%{query}%", f"%{query}%"])
-            
+
+        # El filtro por `query` se aplica en Python (mas abajo) sobre el nombre
+        # RESUELTO, no en SQL: chats.name guarda el lid crudo, asi que un LIKE en
+        # SQL no encontraria por nombre real (ej. buscar "Esposa").
+
         if where_clauses:
             query_parts.append("WHERE " + " AND ".join(where_clauses))
             
@@ -528,6 +528,11 @@ def list_chats(
                 last_sender=chat_data[4],
                 last_is_from_me=chat_data[5]
             ))
+
+        # Filtro por `query` sobre el nombre RESUELTO o el jid (no el lid crudo)
+        if query:
+            q = query.lower().strip()
+            deduped = [c for c in deduped if (c.name and q in c.name.lower()) or q in c.jid.lower()]
 
         # Paginacion en memoria sobre la lista ya unificada
         offset = page * limit
