@@ -194,15 +194,23 @@ def get_message_context(
 def send_message(
     recipient: str,
     message: str,
-    reply_to: str = ""
+    reply_to: str = "",
+    mentions: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """Send a WhatsApp message to a person or group. For group chats use the JID.
+
+    To mention/tag someone, write "@<number>" in the message text (the number with country code,
+    no + or symbols) AND list that same number (or JID) in `mentions`. The mention renders as the
+    contact's name and notifies them — most useful in groups. Numbers written as "@<number>" in the
+    text are auto-detected even if `mentions` is omitted; pass `mentions` to be explicit or to use a
+    specific JID (e.g. a participant's "...@lid"). The "@<number>" in the text must match the JID.
 
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
-        message: The message text to send
+        message: The message text to send. For a mention include "@<number>" (e.g. "Hola @573001234567")
         reply_to: Optional message_id to quote/reply to (the message will appear as a reply to it)
+        mentions: Optional list of phone numbers or JIDs to tag (each should also appear as @<number> in message)
 
     Returns:
         A dictionary containing success status and a status message
@@ -215,7 +223,7 @@ def send_message(
         }
 
     # Call the whatsapp_send_message function with the unified recipient parameter
-    success, status_message = whatsapp_send_message(recipient, message, reply_to)
+    success, status_message = whatsapp_send_message(recipient, message, reply_to, mentions)
     return {
         "success": success,
         "message": status_message

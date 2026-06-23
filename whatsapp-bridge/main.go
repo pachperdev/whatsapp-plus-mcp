@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -227,10 +228,11 @@ type SendMessageResponse struct {
 
 // SendMessageRequest represents the request body for the send message API
 type SendMessageRequest struct {
-	Recipient       string `json:"recipient"`
-	Message         string `json:"message"`
-	MediaPath       string `json:"media_path,omitempty"`
-	QuotedMessageID string `json:"quoted_message_id,omitempty"`
+	Recipient       string   `json:"recipient"`
+	Message         string   `json:"message"`
+	MediaPath       string   `json:"media_path,omitempty"`
+	QuotedMessageID string   `json:"quoted_message_id,omitempty"`
+	Mentions        []string `json:"mentions,omitempty"`
 }
 
 // MarkReadRequest marks one or more messages as read
@@ -410,7 +412,38 @@ func buildQuotedContext(store *MessageStore, client *whatsmeow.Client, quotedID 
 }
 
 // Function to send a WhatsApp message
-func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, quotedMessageID string) (bool, string) {
+// mentionRegex detecta menciones @<numero> (7-15 digitos) en el texto del mensaje.
+var mentionRegex = regexp.MustCompile(`@(\d{7,15})`)
+
+// resolveMentions arma la lista de JIDs mencionados a partir de menciones explicitas
+// (numeros o JIDs) y de auto-detectar @<numero> en el texto. Dedup conservando orden.
+func resolveMentions(text string, explicit []string) []string {
+	seen := map[string]bool{}
+	var jids []string
+	add := func(j string) {
+		if j != "" && !seen[j] {
+			seen[j] = true
+			jids = append(jids, j)
+		}
+	}
+	for _, m := range explicit {
+		m = strings.TrimSpace(m)
+		if m == "" {
+			continue
+		}
+		if strings.Contains(m, "@") {
+			add(m)
+		} else {
+			add(strings.TrimLeft(m, "+") + "@s.whatsapp.net")
+		}
+	}
+	for _, match := range mentionRegex.FindAllStringSubmatch(text, -1) {
+		add(match[1] + "@s.whatsapp.net")
+	}
+	return jids
+}
+
+func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, quotedMessageID string, mentions []string) (bool, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp"
 	}
@@ -583,14 +616,27 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 				FileLength:    &resp.FileLength,
 			}
 		}
-	} else if quotedMessageID != "" {
-		// Reply/quote: citar un mensaje previo con ContextInfo
-		msg.ExtendedTextMessage = &waProto.ExtendedTextMessage{
-			Text:        proto.String(message),
-			ContextInfo: buildQuotedContext(messageStore, client, quotedMessageID),
-		}
 	} else {
-		msg.Conversation = proto.String(message)
+		// Texto: puede llevar reply (ContextInfo con QuotedMessage) y/o menciones (MentionedJID).
+		// Si no hay ninguno, se envia como Conversation plano.
+		var ctxInfo *waProto.ContextInfo
+		if quotedMessageID != "" {
+			ctxInfo = buildQuotedContext(messageStore, client, quotedMessageID)
+		}
+		if mentionJIDs := resolveMentions(message, mentions); len(mentionJIDs) > 0 {
+			if ctxInfo == nil {
+				ctxInfo = &waProto.ContextInfo{}
+			}
+			ctxInfo.MentionedJID = mentionJIDs
+		}
+		if ctxInfo != nil {
+			msg.ExtendedTextMessage = &waProto.ExtendedTextMessage{
+				Text:        proto.String(message),
+				ContextInfo: ctxInfo,
+			}
+		} else {
+			msg.Conversation = proto.String(message)
+		}
 	}
 
 	// Send message
@@ -1101,7 +1147,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		fmt.Println("Received request to send message", req.Message, req.MediaPath)
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, req.MediaPath, req.QuotedMessageID)
+		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, req.MediaPath, req.QuotedMessageID, req.Mentions)
 		fmt.Println("Message sent", success, message)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
