@@ -23,6 +23,11 @@ if not logger.handlers:
 # Sin esto, si el bridge se cuelga (no caído) el server MCP queda bloqueado para siempre.
 REQUEST_TIMEOUT = (5, 30)
 
+# Sesion HTTP reutilizable: mantiene un pool de conexiones keep-alive al bridge en vez de
+# abrir/cerrar un socket TCP por request. urllib3 (debajo) es thread-safe para el uso
+# concurrente de tools del MCP. Reduce latencia por llamada y evita sockets en TIME_WAIT.
+_SESSION = requests.Session()
+
 MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
 # whatsmeow guarda la libreta de contactos y el mapeo lid<->numero aqui
 WHATSAPP_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'whatsapp.db')
@@ -43,7 +48,7 @@ def _bridge_token() -> str:
 def _bridge_post(path: str, payload: dict) -> Dict[str, Any]:
     """POST a un endpoint del bridge con auth + timeout; devuelve el JSON o {success:False}."""
     try:
-        resp = requests.post(
+        resp = _SESSION.post(
             f"{WHATSAPP_API_BASE_URL}/{path}",
             json=payload,
             headers={"X-Auth-Token": _bridge_token()},
@@ -874,7 +879,7 @@ def send_message(recipient: str, message: str, reply_to: str = "", mentions: Opt
         if mentions:
             payload["mentions"] = mentions
 
-        response = requests.post(url, json=payload, headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
+        response = _SESSION.post(url, json=payload, headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -908,7 +913,7 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = requests.post(url, json=payload, headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
+        response = _SESSION.post(url, json=payload, headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -950,7 +955,7 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = requests.post(url, json=payload, headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
+        response = _SESSION.post(url, json=payload, headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -990,7 +995,7 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             "chat_jid": chat_jid
         }
         
-        response = requests.post(url, json=payload, headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
+        response = _SESSION.post(url, json=payload, headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
         
         if response.status_code == 200:
             result = response.json()
@@ -1019,7 +1024,7 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
 def list_groups() -> List[Dict[str, Any]]:
     """Lista los grupos de WhatsApp de los que el usuario es miembro."""
     try:
-        resp = requests.get(
+        resp = _SESSION.get(
             f"{WHATSAPP_API_BASE_URL}/groups",
             headers={"X-Auth-Token": _bridge_token()},
             timeout=REQUEST_TIMEOUT,
@@ -1034,7 +1039,7 @@ def list_groups() -> List[Dict[str, Any]]:
 def mark_as_read(chat_jid: str, message_ids: List[str]) -> Tuple[bool, str]:
     """Marca uno o mas mensajes como leidos (pensado para chats directos)."""
     try:
-        resp = requests.post(
+        resp = _SESSION.post(
             f"{WHATSAPP_API_BASE_URL}/mark_read",
             json={"chat_jid": chat_jid, "message_ids": message_ids},
             headers={"X-Auth-Token": _bridge_token()},
@@ -1050,7 +1055,7 @@ def mark_as_read(chat_jid: str, message_ids: List[str]) -> Tuple[bool, str]:
 def react_to_message(chat_jid: str, message_id: str, emoji: str) -> Tuple[bool, str]:
     """Reacciona a un mensaje con un emoji (chats directos / mensajes recibidos)."""
     try:
-        resp = requests.post(
+        resp = _SESSION.post(
             f"{WHATSAPP_API_BASE_URL}/react",
             json={"chat_jid": chat_jid, "message_id": message_id, "emoji": emoji},
             headers={"X-Auth-Token": _bridge_token()},
@@ -1066,7 +1071,7 @@ def react_to_message(chat_jid: str, message_id: str, emoji: str) -> Tuple[bool, 
 def edit_message(chat_jid: str, message_id: str, new_text: str) -> Tuple[bool, str]:
     """Edita un mensaje propio ya enviado (ventana ~20 min)."""
     try:
-        resp = requests.post(
+        resp = _SESSION.post(
             f"{WHATSAPP_API_BASE_URL}/edit",
             json={"chat_jid": chat_jid, "message_id": message_id, "new_text": new_text},
             headers={"X-Auth-Token": _bridge_token()},
@@ -1082,7 +1087,7 @@ def edit_message(chat_jid: str, message_id: str, new_text: str) -> Tuple[bool, s
 def delete_message(chat_jid: str, message_id: str, sender: str = "") -> Tuple[bool, str]:
     """Elimina un mensaje 'para todos' (revoke). sender vacio = mensaje propio."""
     try:
-        resp = requests.post(
+        resp = _SESSION.post(
             f"{WHATSAPP_API_BASE_URL}/revoke",
             json={"chat_jid": chat_jid, "message_id": message_id, "sender": sender},
             headers={"X-Auth-Token": _bridge_token()},
@@ -1098,7 +1103,7 @@ def delete_message(chat_jid: str, message_id: str, sender: str = "") -> Tuple[bo
 def send_typing(chat_jid: str, state: str = "composing", media: str = "") -> Tuple[bool, str]:
     """Envia presencia de chat: 'composing' (escribiendo) o 'paused'; media '' o 'audio'."""
     try:
-        resp = requests.post(
+        resp = _SESSION.post(
             f"{WHATSAPP_API_BASE_URL}/typing",
             json={"chat_jid": chat_jid, "state": state, "media": media},
             headers={"X-Auth-Token": _bridge_token()},
@@ -1114,7 +1119,7 @@ def send_typing(chat_jid: str, state: str = "composing", media: str = "") -> Tup
 def send_poll(chat_jid: str, question: str, options: List[str], selectable_count: int = 1) -> Tuple[bool, str]:
     """Envia una encuesta. selectable_count=1 (opcion unica) o >1 (multiple)."""
     try:
-        resp = requests.post(
+        resp = _SESSION.post(
             f"{WHATSAPP_API_BASE_URL}/poll",
             json={"chat_jid": chat_jid, "question": question, "options": options, "selectable_count": selectable_count},
             headers={"X-Auth-Token": _bridge_token()},
@@ -1146,7 +1151,7 @@ def list_all_contacts(limit: int = 0) -> List[Contact]:
 def check_whatsapp(phones: List[str]) -> List[Dict[str, Any]]:
     """Verifica si numeros estan en WhatsApp (formato internacional con +)."""
     try:
-        resp = requests.post(
+        resp = _SESSION.post(
             f"{WHATSAPP_API_BASE_URL}/check_whatsapp",
             json={"phones": phones},
             headers={"X-Auth-Token": _bridge_token()},
@@ -1162,7 +1167,7 @@ def check_whatsapp(phones: List[str]) -> List[Dict[str, Any]]:
 def get_profile_picture(jid: str, preview: bool = False) -> Dict[str, Any]:
     """Obtiene la URL de la foto de perfil de un usuario o grupo."""
     try:
-        resp = requests.post(
+        resp = _SESSION.post(
             f"{WHATSAPP_API_BASE_URL}/profile_picture",
             json={"jid": jid, "preview": preview},
             headers={"X-Auth-Token": _bridge_token()},
@@ -1177,7 +1182,7 @@ def get_profile_picture(jid: str, preview: bool = False) -> Dict[str, Any]:
 def get_user_info(jids: List[str]) -> Dict[str, Any]:
     """Obtiene info (status/about, flag business) de uno o mas usuarios."""
     try:
-        resp = requests.post(
+        resp = _SESSION.post(
             f"{WHATSAPP_API_BASE_URL}/user_info",
             json={"jids": jids},
             headers={"X-Auth-Token": _bridge_token()},
@@ -1300,7 +1305,7 @@ def set_disappearing_messages(chat_jid: str, duration: str = "off") -> Tuple[boo
 def get_status() -> Dict[str, Any]:
     """Estado de conexion/sesion/ban del bridge (connected, logged_in, temp_banned, needs_qr, ...)."""
     try:
-        response = requests.get(f"{WHATSAPP_API_BASE_URL}/status",
+        response = _SESSION.get(f"{WHATSAPP_API_BASE_URL}/status",
                                 headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
         if response.status_code == 200:
             return response.json()

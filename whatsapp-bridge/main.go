@@ -132,13 +132,23 @@ func (t dbTime) Value() (driver.Value, error) {
 	return time.Time(t).Local().Format(tsLayout), nil
 }
 
+// execer abstrae *sql.DB y *sql.Tx para reusar la logica de INSERT tanto en escrituras
+// sueltas (store.db) como dentro de una transaccion (batch de history sync), sin duplicar SQL.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
 // Store a chat in the database
-func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time) error {
-	_, err := store.db.Exec(
+func storeChatExec(e execer, jid, name string, lastMessageTime time.Time) error {
+	_, err := e.Exec(
 		"INSERT OR REPLACE INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
 		jid, name, dbTime(lastMessageTime),
 	)
 	return err
+}
+
+func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time) error {
+	return storeChatExec(store.db, jid, name, lastMessageTime)
 }
 
 // Touch a chat: create it if missing (with empty name) or just bump its
@@ -154,20 +164,26 @@ func (store *MessageStore) TouchChat(jid string, lastMessageTime time.Time) erro
 }
 
 // Store a message in the database
-func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, timestamp time.Time, isFromMe bool,
+func storeMessageExec(e execer, id, chatJID, sender, content string, timestamp time.Time, isFromMe bool,
 	mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
 	// Only store if there's actual content or media
 	if content == "" && mediaType == "" {
 		return nil
 	}
 
-	_, err := store.db.Exec(
-		`INSERT OR REPLACE INTO messages 
-		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length) 
+	_, err := e.Exec(
+		`INSERT OR REPLACE INTO messages
+		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, chatJID, sender, content, dbTime(timestamp), isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 	)
 	return err
+}
+
+func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, timestamp time.Time, isFromMe bool,
+	mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
+	return storeMessageExec(store.db, id, chatJID, sender, content, timestamp, isFromMe,
+		mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength)
 }
 
 // Get messages from a chat
@@ -2497,9 +2513,20 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 				continue
 			}
 
-			messageStore.StoreChat(chatJID, name, timestamp)
+			// Batch: una transaccion por conversacion -> 1 fsync en vez de N (WAL +
+			// synchronous=NORMAL). Se abre DESPUES de GetChatName (la unica lectura de esta
+			// iteracion): con SetMaxOpenConns(1) una tx abierta toma la unica conexion y
+			// bloquearia cualquier lectura via store.db (deadlock).
+			tx, err := messageStore.db.Begin()
+			if err != nil {
+				logger.Warnf("history sync: no se pudo iniciar tx para %s: %v", chatJID, err)
+				continue
+			}
+			if err := storeChatExec(tx, chatJID, name, timestamp); err != nil {
+				logger.Warnf("history sync: storeChat fallo (%s): %v", chatJID, err)
+			}
 
-			// Store messages
+			// Store messages (todos sobre la misma tx)
 			for _, msg := range messages {
 				if msg == nil || msg.Message == nil {
 					continue
@@ -2564,7 +2591,8 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					continue
 				}
 
-				err = messageStore.StoreMessage(
+				err = storeMessageExec(
+					tx,
 					msgID,
 					chatJID,
 					sender,
@@ -2592,6 +2620,10 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 							timestamp.Format("2006-01-02 15:04:05"), sender, chatJID, content)
 					}
 				}
+			}
+			if err := tx.Commit(); err != nil {
+				logger.Warnf("history sync: commit fallo (%s): %v", chatJID, err)
+				tx.Rollback()
 			}
 		}
 	}
