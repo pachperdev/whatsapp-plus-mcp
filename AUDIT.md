@@ -46,17 +46,19 @@ set_group_topic, block_contact/unblock_contact (RESUELTO el 400 vía `blockViaLI
 
 **FASE 1 Tier 2 — parcial:** ✅ reply/quote (`send_message` reply_to) · ✅ estado de chat
 (mute/pin/archive/mark/star/get_chat_settings, commit `04a3e87`) · ✅ request_more_history
-(on-demand history sync, best-effort, commit `e88ec56`). 🔲 menciones · crear grupo +
-gestionar participantes · set_disappearing_messages.
+(on-demand history sync, best-effort, commit `e88ec56`) · ✅ menciones (@tag en send_message,
+combinables con reply, commit `a30d453`) · ✅ crear grupo + gestionar participantes
+(create_group, update_group_participants add/remove/promote/demote, commit `280a5d4`).
+🔲 set_disappearing_messages (último del Tier 2).
 
-**Tools actuales (39):** search_contacts, list_messages, list_chats, get_chat,
+**Tools actuales (41):** search_contacts, list_messages, list_chats, get_chat,
 get_direct_chat_by_contact, get_contact_chats, get_last_interaction, get_message_context,
 send_message (con reply_to), send_file, send_audio_message, download_media, list_groups, mark_as_read,
 react_to_message, refresh_contacts, edit_message, delete_message, send_typing, check_whatsapp,
 get_profile_picture, get_user_info, list_all_contacts, send_poll, get_group_participants,
 get_group_invite_link, join_group, leave_group, set_group_name, set_group_topic,
 block_contact, unblock_contact, mute_chat, pin_chat, archive_chat, mark_chat, star_message,
-get_chat_settings, request_more_history.
+get_chat_settings, request_more_history, create_group, update_group_participants.
 
 ---
 
@@ -89,9 +91,9 @@ Client son **wrappers de baja complejidad** (handler REST en el bridge + tool Py
 **Tier 2 — alto valor · complejidad media:**
 | Tool | API whatsmeow |
 |---|---|
-| ✅ `send_message` con **reply/quote** (commit, RESUELTO) · 🔲 menciones | armar `ContextInfo` (StanzaID, Participant, QuotedMessage, MentionedJID) |
+| ✅ `send_message` con **reply/quote** + **menciones** (commit `a30d453`, RESUELTO) | `ContextInfo` único combina QuotedMessage (reply) + MentionedJID (menciones). `resolveMentions` auto-detecta `@<número>` en el texto y acepta JIDs explícitos. Menciones por número se renderizan resaltadas. |
 | ✅ Estado de chat: `mute_chat` / `pin_chat` / `archive_chat` / `mark_chat` (read/unread) / `star_message` / `get_chat_settings` (commit `04a3e87`, RESUELTO) | `appstate.Build*` + `SendAppState` + `Store.ChatSettings.GetChatSettings`. Nota fix: `BuildStar` mapea `sender==target → "0"` en el index; en directos/mensajes propios se pasa el chat como sender (sin esto la estrella no se ve). `mark_chat` con read=false solo pinta badge si el último mensaje es entrante. |
-| `create_group` / `update_group_participants` (add/remove/promote/demote) | `CreateGroup` / `UpdateGroupParticipants` |
+| ✅ `create_group` / `update_group_participants` (add/remove/promote/demote) (commit `280a5d4`, RESUELTO) | `CreateGroup` (nombre ≤25 chars, no incluir el JID propio) / `UpdateGroupParticipants`. Validado en vivo: crear con N participantes, promote/demote, remove/add. **Nota op:** para *eliminar* un grupo hay que remover a todos los participantes y recién después salir — si salís primero, ya no podés administrarlo. |
 | ✅ `request_more_history` (commit `e88ec56`, RESUELTO) | peer message al propio JID con `Peer:true` (NO a `status@s.whatsapp.net`, eso cuelga en usync). **Best-effort**: WhatsApp es E2E, el server no guarda historial; lo sirve el teléfono primario (debe estar online) y solo lo que él conserve. Validado: el teléfono respondió eventos ON_DEMAND, `Stored 0` por no tener mensajes más viejos. |
 | `set_disappearing_messages` | `SetDisappearingTimer` |
 
