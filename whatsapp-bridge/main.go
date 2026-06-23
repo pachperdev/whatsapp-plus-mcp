@@ -53,11 +53,19 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to create store directory: %v", err)
 	}
 
-	// Open SQLite database for messages
-	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on")
+	// Open SQLite database for messages.
+	// WAL: permite lecturas concurrentes (el server Python lee mientras el bridge escribe)
+	//      sin bloquear, eliminando "database is locked" entre ambos procesos.
+	// busy_timeout: una escritura reintenta hasta 5s antes de fallar por lock.
+	// synchronous=NORMAL: seguro bajo WAL y mucho mas rapido que FULL.
+	db, err := sql.Open("sqlite3",
+		"file:store/messages.db?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
 	}
+	// SQLite escribe en serie: una sola conexion serializa las escrituras y evita
+	// la contencion interna entre el history-sync y los mensajes en vivo.
+	db.SetMaxOpenConns(1)
 
 	// Create tables if they don't exist
 	_, err = db.Exec(`
@@ -847,8 +855,11 @@ func main() {
 			handleMessage(client, messageStore, v, logger)
 
 		case *events.HistorySync:
-			// Process history sync events
-			handleHistorySync(client, messageStore, v, logger)
+			// Procesar en goroutine para NO bloquear el dispatch de eventos en vivo.
+			// El history-sync puede tardar minutos (cientos de mensajes + lookups de red);
+			// si corre sincronico en el handler, los *events.Message en vivo quedan
+			// encolados detras y no se guardan hasta que termina (bug observado).
+			go handleHistorySync(client, messageStore, v, logger)
 
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
