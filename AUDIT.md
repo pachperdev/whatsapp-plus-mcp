@@ -54,7 +54,7 @@ combinables con reply, commit `a30d453`) · ✅ crear grupo + gestionar particip
 ➡️ **FASE 1 (Tier 1 + Tier 2) cerrada.** Próximo foco: **FASE 2 — Robustez** (lo más prioritario:
 🔴 manejo de eventos de ban + `/api/status`). Tier 3 (captura no-texto, presencia, etc.) queda como ampliación opcional de FASE 1.
 
-**Tools actuales (42):** search_contacts, list_messages, list_chats, get_chat,
+**Tools actuales (43):** search_contacts, list_messages, list_chats, get_chat,
 get_direct_chat_by_contact, get_contact_chats, get_last_interaction, get_message_context,
 send_message (con reply_to), send_file, send_audio_message, download_media, list_groups, mark_as_read,
 react_to_message, refresh_contacts, edit_message, delete_message, send_typing, check_whatsapp,
@@ -62,7 +62,7 @@ get_profile_picture, get_user_info, list_all_contacts, send_poll, get_group_part
 get_group_invite_link, join_group, leave_group, set_group_name, set_group_topic,
 block_contact, unblock_contact, mute_chat, pin_chat, archive_chat, mark_chat, star_message,
 get_chat_settings, request_more_history, create_group, update_group_participants,
-set_disappearing_messages.
+set_disappearing_messages, get_status.
 
 ---
 
@@ -109,9 +109,9 @@ Client son **wrappers de baja complejidad** (handler REST en el bridge + tool Py
 - Votos de encuesta entrantes (`DecryptPollVote`).
 
 ### FASE 2 — Robustez / correctness
-- 🔴 **Manejo de eventos de ban (hacer temprano):** escuchar `events.TemporaryBan` (loggear code+expire, **pausar envíos**), `events.ConnectFailure` (chequear `IsLoggedOut`), `events.LoggedOut`. Exponer vía `/api/status`.
-- `/api/status` endpoint: logged-in / necesita re-escanear QR / temp-banned.
-- Procesar `events.Receipt` (delivered/read) → saber si leyeron + base para `get_unread_chats`.
+- ✅ **Manejo de eventos de ban** (commit `761b532`, RESUELTO): el handler captura `events.TemporaryBan` (loggea code+reason+expire y **pausa envíos** vía guard `isTempBanned` en `sendWhatsAppMessage`), `events.ConnectFailure` (registra fallo; `IsLoggedOut()` → marca logout), `events.LoggedOut` (guarda razón), `events.Connected`/`Disconnected` (timestamps). Estado thread-safe (`botStatus` + `sync.RWMutex`). **Validado en vivo:** corte de red (Disconnected+reconnect), cierre de sesión (LoggedOut→needs_qr), re-vinculación por QR.
+- ✅ **`/api/status` + tool `get_status`** (commit `761b532`): connected, logged_in, jid, temp_banned (code/reason/expires_at), needs_qr, last_connect_failure, timestamps. *Helper de re-vinculación: el bridge loggea el code crudo del QR (`QR_RAW`) → se puede generar el QR como imagen (PNG) y abrirlo, sin depender del ASCII en terminal.*
+- 🔲 Procesar `events.Receipt` (delivered/read) → saber si leyeron + base para `get_unread_chats`.
 - **M6** `_load_contact_index` ignora `our_jid` (latente con multi-cuenta).
 - ✅ **`block_contact`/`unblock_contact`** RESUELTO (commit `05509a4`): WhatsApp cambió el protocolo de blocklist (el `<item>` va por **LID + `pn_jid` + `dhash`**, no por número); `UpdateBlocklist` de whatsmeow envía el formato viejo → 400 (fix upstream en PR #1137, sin mergear). Workaround `blockViaLID`: resuelve LID (`GetLIDForPN` → fallback `GetUserInfo`) + `pn_jid`, arma el IQ nuevo vía `DangerousInternals().SendNode` y verifica con `GetBlocklist`. Validado en vivo (block + unblock). *Si whatsmeow mergea #1137, volver a `UpdateBlocklist` nativo.*
 - Menores: adaptador `datetime`→str deprecado en Python 3.12; paginación `OFFSET` sin tie-breaker.
