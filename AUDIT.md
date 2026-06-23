@@ -145,13 +145,13 @@ implementar **Tier A + Tier B paso a paso** (Tier A primero). Tier C NO por ahor
 > Validación en vivo + commit por lote. **Orden:** A1 → A2 → A4 → A3 → B1 → B2 → B3 → Logout.
 > Firmas verificadas contra whatsmeow @20260622. ~19 tools nuevas (43 → ~62).
 
-**🟢 LOTE A1 — Perfil & cuenta (bajo riesgo)**
+**🟢 LOTE A1 — Perfil & cuenta — ✅ COMPLETO (commit `4a36fd2`, validado vía MCP)**
 - 🔲 `set_status_message` ← `SetStatusMessage(ctx, msg)` · `/api/set_status`. Prueba: cambiar about propio → `get_user_info(yo)` → revertir.
 - 🔲 `get_business_profile` ← `GetBusinessProfile(ctx, jid)` → `{Address,Email,Categories,BusinessHours}` · `/api/business_profile`. Prueba: contacto con `is_business:true`.
 - 🔲 `get_user_devices` ← `GetUserDevices(ctx, jids)` · `/api/user_devices`. Prueba: sobre Daniel.
 - 🔲 `set_default_disappearing` ← `SetDefaultDisappearingTimer(ctx, timer)` (presets off/24h/7d/90d) · `/api/default_disappearing`.
 
-**🟢 LOTE A2 — Administración de grupos (admin, sobre grupo de prueba)**
+**🟢 LOTE A2 — Administración de grupos — ✅ COMPLETO (commit `9636d17`, validado vía MCP)** · nota: `set_group_photo` requiere JPEG cuadrado
 - 🔲 `set_group_description` ← `SetGroupDescription(ctx, jid, desc)`.
 - 🔲 `set_group_announce` ← `SetGroupAnnounce(ctx, jid, bool)` (solo admins escriben).
 - 🔲 `set_group_locked` ← `SetGroupLocked(ctx, jid, bool)` (solo admins editan info).
