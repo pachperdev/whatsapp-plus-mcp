@@ -51,8 +51,11 @@ combinables con reply, commit `a30d453`) · ✅ crear grupo + gestionar particip
 (create_group, update_group_participants add/remove/promote/demote, commit `280a5d4`) ·
 ✅ set_disappearing_messages (off/24h/7d/90d, commit `e193a13`).
 
-➡️ **FASE 1 (Tier 1 + Tier 2) cerrada.** Próximo foco: **FASE 2 — Robustez** (lo más prioritario:
-🔴 manejo de eventos de ban + `/api/status`). Tier 3 (captura no-texto, presencia, etc.) queda como ampliación opcional de FASE 1.
+**FASE 2 — COMPLETA:** ✅ ban events (`TemporaryBan`/`ConnectFailure`/`LoggedOut`/`Connected`/`Disconnected`) + `/api/status` + `get_status` + pausa de envíos ante ban (commit `761b532`). Validado en vivo (Disconnected, LoggedOut, re-vinculación QR).
+
+**FASE 3 — COMPLETA:** ✅ migración a `modernc.org/sqlite` sin CGO (commit `caf5df3`) · ✅ batch tx por conversación en history-sync (M2) + reuso de conexión HTTP (commit `bb4c8d6`).
+
+➡️ **FASE 1, 2 y 3 cerradas.** Próximo (y último): **FASE 4 — Calidad/infra** (SDK mcp 1.6→1.28, structured output Pydantic, resources/prompts, tests + CI + README). Tier 3 funcional (captura no-texto, presencia, etc.) queda como ampliación opcional.
 
 **Tools actuales (43):** search_contacts, list_messages, list_chats, get_chat,
 get_direct_chat_by_contact, get_contact_chats, get_last_interaction, get_message_context,
@@ -117,10 +120,10 @@ Client son **wrappers de baja complejidad** (handler REST en el bridge + tool Py
 - Menores: adaptador `datetime`→str deprecado en Python 3.12; paginación `OFFSET` sin tie-breaker.
 - Alcance: `mark_as_read`/`react`/sandbox de media asumen chats directos; grupos = sender acotado.
 
-### FASE 3 — Performance
-- **M2** batch transaction en history-sync (hoy inserts uno por uno; ya mitigado por T1+T2, es optimización).
-- Migrar driver SQLite a `modernc.org/sqlite` (puro Go, **sin CGO**) → builds reproducibles y cross-compile triviales. Penalidad de runtime irrelevante a esta escala. Cambio: import + `sql.Open("sqlite", ...)`.
-- Reusar conexión `httpx`/cliente al bridge (lifespan) en el server.
+### FASE 3 — Performance ✅ COMPLETA
+- ✅ **Migración a `modernc.org/sqlite`** (puro Go, sin CGO) (commit `caf5df3`): driver SQLite (mensajes + store de whatsmeow) sin CGO → cross-compile a darwin/linux/windows sin toolchain C (habilita distribuir binarios del plugin). DSN con `_pragma=...(...)`; dialect whatsmeow `sqlite`. **Fix clave:** tipo `dbTime` (`driver.Valuer`) que fuerza el formato `2006-01-02 15:04:05-07:00` (modernc serializaría `time.Time` con `.String()` → rompía ORDER BY y `fromisoformat` de Python — riesgo silencioso). Validado: build/cross-compile sin CGO, sesión vieja leída sin QR, timestamps compatibles, `list_messages` MCP OK.
+- ✅ **M2 batch transaction en history-sync** (commit `bb4c8d6`): una tx **por conversación** (1 fsync en vez de N). Interface `execer` (abstrae `*sql.DB`/`*sql.Tx`) para no duplicar SQL. La tx se abre tras `GetChatName` para evitar deadlock con `SetMaxOpenConns(1)`.
+- ✅ **Reuso de conexión HTTP** (commit `bb4c8d6`): `requests.Session()` global en el server → pool keep-alive al bridge (16 llamadas) en vez de un socket TCP por request.
 
 ### FASE 4 — Calidad / infra (AL FINAL)
 - **Actualizar el SDK `mcp` 1.6.0 → `>=1.28,<2`** (`uv lock --upgrade`). Desbloquea lo de abajo. (El bridge Go ya está al día.)
