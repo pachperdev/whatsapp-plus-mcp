@@ -1,4 +1,6 @@
 *.db
+*.db-wal
+*.db-shm
 claude_desktop_config.json
 whatsapp.log
 
