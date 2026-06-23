@@ -146,6 +146,24 @@ def resolve_contact_name(jid: str) -> Optional[str]:
     return None
 
 
+def _canonical_chat_key(jid: str) -> str:
+    """Clave para unificar chats que son la misma persona bajo distintos JIDs.
+
+    Un contacto aparece a veces como <lid>@lid (mensajes en vivo) y como
+    <numero>@s.whatsapp.net (history sync); ambos colapsan al mismo numero.
+    Grupos y broadcast NO se unifican (devuelven su jid tal cual).
+    """
+    if not jid:
+        return jid
+    suffix = jid.split('@', 1)[1] if '@' in jid else ''
+    if suffix.startswith('g.us') or suffix.startswith('broadcast'):
+        return jid
+    names, lid_to_pn = _get_contact_index()
+    local = _normalize_phone(jid)
+    pn = lid_to_pn.get(local) if suffix.startswith('lid') else local
+    return pn or jid
+
+
 def get_sender_name(sender_jid: str) -> str:
     # 1) Nombre real desde la libreta de WhatsApp (lid -> numero -> nombre)
     name = resolve_contact_name(sender_jid)
@@ -440,28 +458,32 @@ def list_chats(
         order_by = "chats.last_message_time DESC" if sort_by == "last_active" else "chats.name"
         query_parts.append(f"ORDER BY {order_by}")
         
-        # Add pagination
-        offset = (page ) * limit
-        query_parts.append("LIMIT ? OFFSET ?")
-        params.extend([limit, offset])
-        
+        # NO paginamos en SQL: traemos todo ordenado y luego unificamos los chats
+        # que son la misma persona bajo distintos JIDs (lid vs numero). Recien ahi
+        # aplicamos limit/offset, para que el conteo sea correcto tras deduplicar.
         cursor.execute(" ".join(query_parts), tuple(params))
         chats = cursor.fetchall()
-        
-        result = []
+
+        seen_keys = set()
+        deduped = []
         for chat_data in chats:
+            key = _canonical_chat_key(chat_data[0])
+            if key in seen_keys:
+                continue  # ya tenemos la fila mas reciente de esta persona
+            seen_keys.add(key)
             resolved = resolve_contact_name(chat_data[0])
-            chat = Chat(
+            deduped.append(Chat(
                 jid=chat_data[0],
                 name=resolved or chat_data[1],
                 last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
                 last_message=chat_data[3],
                 last_sender=chat_data[4],
                 last_is_from_me=chat_data[5]
-            )
-            result.append(chat)
-            
-        return result
+            ))
+
+        # Paginacion en memoria sobre la lista ya unificada
+        offset = page * limit
+        return deduped[offset:offset + limit]
         
     except sqlite3.Error as e:
         logger.error(f"Database error: {e}")
