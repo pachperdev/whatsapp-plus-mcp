@@ -11,5 +11,6 @@ whatsapp-bridge/whatsapp-bridge
 # Config MCP local (rutas absolutas de la máquina, no portable)
 .mcp.json
 
-# Token de auth del bridge (secreto local; se regenera solo si falta)
-whatsapp-bridge/store/.bridge_token
+# Datos de runtime del bridge: DBs (mensajes/sesión), token, y MEDIA descargada
+# (fotos/audios/videos/documentos/stickers privados). NADA de store/ debe versionarse.
+whatsapp-bridge/store/
