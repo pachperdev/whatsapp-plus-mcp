@@ -3004,6 +3004,18 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "poll vote sent", "options": req.Options})
 	}))
 
+	// --- Logout: desvincula la sesión (requiere re-escanear QR para volver) ---
+	http.HandleFunc("/api/logout", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := client.Logout(context.Background()); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		status.onLoggedOut("logout solicitado por el usuario")
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "logged out; reiniciar el bridge y re-escanear el QR para volver a vincular"})
+	}))
+
 	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).
 	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
 	srv := &http.Server{

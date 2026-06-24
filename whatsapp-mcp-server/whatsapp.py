@@ -1427,3 +1427,11 @@ def subscribe_presence(jid: str) -> Tuple[bool, str]:
 def get_presence(jid: str) -> Dict[str, Any]:
     """Ultimo estado de presencia conocido de un contacto (online, last_seen, typing)."""
     return _bridge_post("get_presence", {"jid": jid})
+
+
+# --- Logout ---
+
+def logout() -> Tuple[bool, str]:
+    """Desvincula la sesion de WhatsApp. Requiere re-escanear el QR para volver a usar el MCP."""
+    d = _bridge_post("logout", {})
+    return d.get("success", False), d.get("message", "")

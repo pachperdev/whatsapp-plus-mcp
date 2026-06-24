@@ -60,7 +60,8 @@ from whatsapp import (
     join_group_with_invite as whatsapp_join_group_with_invite,
     set_presence as whatsapp_set_presence,
     subscribe_presence as whatsapp_subscribe_presence,
-    get_presence as whatsapp_get_presence
+    get_presence as whatsapp_get_presence,
+    logout as whatsapp_logout
 )
 
 # Initialize FastMCP server
@@ -838,6 +839,16 @@ def get_presence(jid: str) -> Dict[str, Any]:
         jid: The contact JID
     """
     return whatsapp_get_presence(jid)
+
+@mcp.tool()
+def logout() -> Dict[str, Any]:
+    """Log out / unlink this WhatsApp session.
+
+    ⚠️ After this you will be DISCONNECTED and must re-scan the QR code (restart the bridge) to
+    use the MCP again. Only use when the user explicitly wants to unlink the account.
+    """
+    success, status_message = whatsapp_logout()
+    return {"success": success, "message": status_message}
 
 if __name__ == "__main__":
     # Initialize and run the server
