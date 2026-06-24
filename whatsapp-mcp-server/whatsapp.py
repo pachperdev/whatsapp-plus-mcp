@@ -1435,3 +1435,34 @@ def logout() -> Tuple[bool, str]:
     """Desvincula la sesion de WhatsApp. Requiere re-escanear el QR para volver a usar el MCP."""
     d = _bridge_post("logout", {})
     return d.get("success", False), d.get("message", "")
+
+
+# --- Lote T3-3: chats no leídos ---
+
+def get_unread_chats() -> List[Dict[str, Any]]:
+    """Lista los chats con mensajes entrantes sin leer (rastreados en vivo por el bridge).
+
+    El conteo se cuenta desde que el bridge está corriendo (el history-sync no lo puebla),
+    y se limpia al leer el chat en el teléfono (read-receipt propio), al responder, o vía
+    mark_as_read. Devuelve [] si no hay no-leídos.
+    """
+    try:
+        response = _SESSION.get(f"{WHATSAPP_API_BASE_URL}/unread_chats",
+                                headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
+        if response.status_code != 200:
+            return []
+        data = response.json()
+    except (requests.RequestException, json.JSONDecodeError):
+        return []
+    if not data.get("success"):
+        return []
+    out: List[Dict[str, Any]] = []
+    for c in data.get("chats", []):
+        jid = c.get("chat_jid", "")
+        out.append({
+            "chat_jid": jid,
+            "name": resolve_contact_name(jid) or jid,
+            "unread_count": c.get("unread_count", 0),
+            "last_time": c.get("last_time", ""),
+        })
+    return out

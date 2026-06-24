@@ -57,13 +57,16 @@ combinables con reply, commit `a30d453`) · ✅ crear grupo + gestionar particip
 
 **GAPS Tier A + B + Logout — COMPLETO** (jun-2026): A1 perfil&cuenta · A2 admin grupos · A4 encuestas votar/leer · A3 solicitudes de ingreso · B1 unirse por código · B2 presencia (con unificación lid↔número) · B3 registro de llamadas · Logout. Captura ampliada: media descargable (stickers/wrappers/captions), polls, invitaciones de grupo, votos, llamadas, presencia. Todo validado en vivo vía MCP / dispositivos físicos.
 
-➡️ **FASE 1, 2, 3 + Tier A/B cerrados.** Próximo (y único pendiente): **FASE 4 — Calidad/infra** (SDK mcp 1.6→1.28, structured output Pydantic, resources/prompts, tests + CI + README + linters).
+**TIER 3 — COMPLETO** (jun-2026): T3-1 captura de metadata no-media (ubicación/ubicación en vivo/contactos vCard) · T3-2 edits/revokes entrantes reflejados in-place (edit moderno vía `DecryptSecretEncryptedMessage`) · T3-3 `get_unread_chats` (tracking de no-leídos en vivo + read-receipts). Todo validado en vivo vía MCP.
 
-**Tools actuales (61):** las 43 previas + set_status_message, get_business_profile, get_user_devices,
+➡️ **FASE 1, 2, 3 + Tier A/B + Tier 3 cerrados.** Próximo (y único pendiente): **FASE 4 — Calidad/infra** (SDK mcp 1.6→1.28, structured output Pydantic, resources/prompts, tests + CI + README + linters).
+
+**Tools actuales (62):** las 43 previas + set_status_message, get_business_profile, get_user_devices,
 set_default_disappearing, set_group_description, set_group_announce, set_group_locked, set_group_photo,
 vote_poll, set_group_join_approval, get_group_join_requests, review_group_join_request,
-get_group_info_from_invite, join_group_with_invite, set_presence, subscribe_presence, get_presence, logout.
-(B3 registro de llamadas no agrega tool: captura events.CallOffer → mensaje "call" en list_messages.)
+get_group_info_from_invite, join_group_with_invite, set_presence, subscribe_presence, get_presence, logout,
+get_unread_chats.
+(Captura sin tool nueva: B3 llamadas → mensaje "call"; T3-1 ubicación/contactos y T3-2 edits/revokes → en list_messages.)
 
 ---
 
@@ -105,7 +108,7 @@ Client son **wrappers de baja complejidad** (handler REST en el bridge + tool Py
 **Tier 3 — requieren event handler nuevo o estado en SQLite (mayor esfuerzo):**
 - ✅ **Media descargable completa** (commit `de8e7f6`, RESUELTO): `extractMediaInfo`/`extractTextContent` ahora capturan **stickers** (.webp), desenrollan **wrappers** (`EphemeralMessage`/`ViewOnceMessage`/`DocumentWithCaptionMessage`) y guardan **captions** de imagen/video/documento. GIFs ya cubiertos (son `VideoMessage`). **`download_media` arreglado** (bug del 403): se persiste el `DirectPath` nativo (columna `direct_path`) en vez de reconstruirlo de la URL. Validado en vivo: imagen/video/audio/documento(PDF)/sticker.
 - ✅ **Captura de NO-media (metadata)** — LOTE T3-1 (validado en vivo): `LocationMessage`/`LiveLocationMessage` (coords + nombre/dirección) y `ContactMessage`/`ContactsArrayMessage` (nombre + teléfono parseado del vCard, helper `vcardPhone`) → en `extractTextContent`. (`PollCreationMessage` ya en A4.) Pendiente menor: `buildQuotedContext` solo cita texto (citar sticker/imagen requeriría reconstruir ese `QuotedMessage`).
-- 🔲 `get_unread_chats` — procesar `events.Receipt` y trackear read-state en SQLite (no hay "unread count" directo). **(LOTE T3-3)**
+- ✅ **`get_unread_chats`** — LOTE T3-3 (validado en vivo): tabla aislada `unread_messages` poblada SOLO en vivo (el history-sync no la toca, así el conteo no se infla). Entrante→no leído; se limpia con read-receipt propio (`events.Receipt` tipo `ReadSelf`), al responder (mensaje propio en vivo), o vía `mark_as_read`. Excluye `status@broadcast` (Novedades) y `@newsletter`. Tool resuelve nombre del chat. Validado: Esposa count=1 → leer en teléfono → read-self limpia → vacío.
 - ✅ **Edits/revokes entrantes** — LOTE T3-2 (validado en vivo): se reflejan in-place en la DB SIN reordenar (no se toca timestamp ni last_message_time). Revoke = `ProtocolMessage` REVOKE → `🗑️ Mensaje eliminado`. **Edit moderno = `SecretEncryptedMessage` con `secretEncType=MESSAGE_EDIT` (contenido CIFRADO)** → `client.DecryptSecretEncryptedMessage` (igual que poll votes) → texto nuevo + `(editado)`. Hallazgo clave: el edit en vivo NO llega como `IsEdit`/`ProtocolMessage` (eso solo en history-sync); WhatsApp moderno usa secret-encrypted. Helpers: `ApplyMessageEdit`/`MarkMessageRevoked`/`extractEditedText`.
 - ✅ Presencia de terceros — hecho en **LOTE B2** (`set/subscribe/get_presence` + handlers `events.Presence`/`events.ChatPresence`, unificación lid↔número).
 - ✅ Votos de encuesta entrantes — hecho en **LOTE A4** (`DecryptPollVote` en el handler).

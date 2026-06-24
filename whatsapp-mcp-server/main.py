@@ -61,7 +61,8 @@ from whatsapp import (
     set_presence as whatsapp_set_presence,
     subscribe_presence as whatsapp_subscribe_presence,
     get_presence as whatsapp_get_presence,
-    logout as whatsapp_logout
+    logout as whatsapp_logout,
+    get_unread_chats as whatsapp_get_unread_chats
 )
 
 # Initialize FastMCP server
@@ -849,6 +850,16 @@ def logout() -> Dict[str, Any]:
     """
     success, status_message = whatsapp_logout()
     return {"success": success, "message": status_message}
+
+@mcp.tool()
+def get_unread_chats() -> List[Dict[str, Any]]:
+    """List chats with unread incoming messages, most recent first.
+
+    Each item: chat_jid, name, unread_count, last_time. Unread is tracked live by the bridge
+    (counted from when the bridge started; history-sync does not populate it) and cleared when
+    you read the chat on your phone, reply, or call mark_as_read. Returns [] if nothing unread.
+    """
+    return whatsapp_get_unread_chats()
 
 if __name__ == "__main__":
     # Initialize and run the server

@@ -106,6 +106,13 @@ func NewMessageStore() (*MessageStore, error) {
 
 		CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages(chat_jid, timestamp DESC);
 		CREATE INDEX IF NOT EXISTS idx_chats_lastmsg ON chats(last_message_time DESC);
+
+		CREATE TABLE IF NOT EXISTS unread_messages (
+			chat_jid TEXT,
+			message_id TEXT,
+			timestamp TIMESTAMP,
+			PRIMARY KEY (chat_jid, message_id)
+		);
 	`)
 	if err != nil {
 		db.Close()
@@ -219,6 +226,60 @@ func (store *MessageStore) ApplyMessageEdit(id, chatJID, newText string) (int64,
 	}
 	n, _ := res.RowsAffected()
 	return n, nil
+}
+
+// --- T3-3: tracking de no leídos (solo mensajes entrantes EN VIVO; el history-sync NO
+// puebla esta tabla, así que el conteo empieza desde que el bridge está corriendo). ---
+
+// AddUnread registra un mensaje entrante como no leído.
+func (store *MessageStore) AddUnread(chatJID, messageID string, ts time.Time) error {
+	_, err := store.db.Exec(
+		"INSERT OR IGNORE INTO unread_messages (chat_jid, message_id, timestamp) VALUES (?, ?, ?)",
+		chatJID, messageID, dbTime(ts),
+	)
+	return err
+}
+
+// ClearChatUnread marca todo un chat como leído (al recibir read-receipt propio, al
+// responder, o vía mark_read). Devuelve cuántos no-leídos se limpiaron.
+func (store *MessageStore) ClearChatUnread(chatJID string) (int64, error) {
+	res, err := store.db.Exec("DELETE FROM unread_messages WHERE chat_jid = ?", chatJID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// UnreadChat resume un chat con mensajes sin leer. LastTime es string porque MAX(timestamp)
+// pierde el tipo de columna y modernc lo devuelve como texto (no convertible a time.Time).
+type UnreadChat struct {
+	ChatJID     string `json:"chat_jid"`
+	UnreadCount int    `json:"unread_count"`
+	LastTime    string `json:"last_time"`
+}
+
+// GetUnreadChats lista los chats con no-leídos, más recientes primero.
+// Excluye status@broadcast (Novedades) y newsletters: no son chats conversacionales.
+func (store *MessageStore) GetUnreadChats() ([]UnreadChat, error) {
+	rows, err := store.db.Query(
+		`SELECT chat_jid, COUNT(*), MAX(timestamp) FROM unread_messages
+		 WHERE chat_jid != 'status@broadcast' AND chat_jid NOT LIKE '%@newsletter'
+		 GROUP BY chat_jid ORDER BY MAX(timestamp) DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UnreadChat
+	for rows.Next() {
+		var c UnreadChat
+		if err := rows.Scan(&c.ChatJID, &c.UnreadCount, &c.LastTime); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // Get messages from a chat
@@ -1323,6 +1384,16 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	if err != nil {
 		logger.Warnf("Failed to store message: %v", err)
 	} else {
+		// T3-3: tracking de no leídos. Entrante -> no leído; propio (respondí/envié desde
+		// cualquier device) -> el chat queda leído. Se excluyen Novedades/newsletters
+		// (no son chats conversacionales).
+		isTrackable := chatJID != "status@broadcast" && !strings.HasSuffix(chatJID, "@newsletter")
+		if msg.Info.IsFromMe {
+			_, _ = messageStore.ClearChatUnread(chatJID)
+		} else if isTrackable {
+			_ = messageStore.AddUnread(chatJID, msg.Info.ID, msg.Info.Timestamp)
+		}
+
 		// Log message reception
 		timestamp := msg.Info.Timestamp.Format("2006-01-02 15:04:05")
 		direction := "←"
@@ -1854,7 +1925,29 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
+		// T3-3: el chat queda leído localmente.
+		_, _ = messageStore.ClearChatUnread(req.ChatJID)
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "marked as read"})
+	}))
+
+	// Handler: list chats with unread (incoming) messages tracked live.
+	http.HandleFunc("/api/unread_chats", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		chats, err := messageStore.GetUnreadChats()
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		out := make([]map[string]interface{}, 0, len(chats))
+		for _, c := range chats {
+			out = append(out, map[string]interface{}{
+				"chat_jid":     c.ChatJID,
+				"unread_count": c.UnreadCount,
+				"last_time":    c.LastTime,
+			})
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "chats": out})
 	}))
 
 	// Handler: react to a message with an emoji
@@ -3264,6 +3357,15 @@ func main() {
 			// si corre sincronico en el handler, los *events.Message en vivo quedan
 			// encolados detras y no se guardan hasta que termina (bug observado).
 			go handleHistorySync(client, messageStore, v, logger)
+
+		case *events.Receipt:
+			// T3-3: read-receipt PROPIO (leí el chat desde el teléfono u otro device) ->
+			// marcar ese chat como leído. (ReceiptTypeRead = otros leyeron MIS mensajes, no aplica.)
+			if v.Type == types.ReceiptTypeReadSelf {
+				if n, _ := messageStore.ClearChatUnread(v.Chat.String()); n > 0 {
+					logger.Infof("Chat %s marcado como leído (read-self): %d no-leídos limpiados", v.Chat.String(), n)
+				}
+			}
 
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
