@@ -3127,6 +3127,10 @@ func main() {
 		case *events.ChatPresence:
 			// Typing de terceros (composing/paused) en un chat.
 			presences.onChatPresence(canonicalPresenceKey(client, v.MessageSource.Sender), v.State == types.ChatPresenceComposing)
+
+		case *events.CallOffer:
+			// Llamada entrante: solo se registra (whatsmeow no maneja audio). Sin auto-rechazo.
+			go handleCallOffer(client, messageStore, v, logger)
 		}
 	})
 
@@ -3328,6 +3332,28 @@ func handlePollVote(client *whatsmeow.Client, store *MessageStore, evt *events.M
 			"poll_vote", "", "", "", nil, nil, nil, 0); err != nil {
 			logger.Warnf("poll vote: no se pudo persistir: %v", err)
 		}
+	}
+}
+
+// handleCallOffer registra una llamada entrante como un mensaje "call" (whatsmeow no puede
+// atender llamadas; solo las detecta). Queda consultable via list_messages. No se rechaza.
+func handleCallOffer(client *whatsmeow.Client, store *MessageStore, evt *events.CallOffer, logger waLog.Logger) {
+	caller := evt.CallCreator
+	if caller.User == "" {
+		caller = evt.From
+	}
+	logger.Infof("📞 Llamada entrante de %s (call %s)", caller.String(), evt.CallID)
+	if store == nil {
+		return
+	}
+	chatJID := caller.String()
+	if !evt.GroupJID.IsEmpty() {
+		chatJID = evt.GroupJID.String() // llamada grupal
+	}
+	_ = store.TouchChat(chatJID, evt.Timestamp)
+	if err := store.StoreMessage("CALL_"+evt.CallID, chatJID, caller.User, "📞 Llamada entrante",
+		evt.Timestamp, false, "call", "", "", "", nil, nil, nil, 0); err != nil {
+		logger.Warnf("call offer: no se pudo registrar: %v", err)
 	}
 }
 
