@@ -170,11 +170,11 @@ implementar **Tier A + Tier B paso a paso** (Tier A primero). Tier C NO por ahor
 - 🔲 `get_group_info_from_invite` ← `GetGroupInfoFromInvite(ctx, jid, inviter, code, expiration)`.
 - 🔲 `join_group_with_invite` ← `JoinGroupWithInvite(ctx, jid, inviter, code, expiration)`.
 
-**🔵 LOTE B2 — Presencia**
+**🔵 LOTE B2 — Presencia — ✅ COMPLETO (commit `216d5a5`, validado vía MCP con dispositivo físico; unificación lid↔número)**
 - 🔲 `set_presence` ← `SendPresence(ctx, state)` (`PresenceAvailable`/`PresenceUnavailable`; requisito para recibir presencia de otros).
 - 🔲 `subscribe_presence` ← `SubscribePresence(ctx, jid)` + handlers `events.Presence` (`From`/`Unavailable`/`LastSeen`) y `events.ChatPresence` (typing de terceros) → persistir.
 
-**🔵 LOTE B3 — Llamadas**
+**🔵 LOTE B3 — Llamadas — ✅ COMPLETO (commit, solo registro; RejectCall descartado por bajo valor en cuenta personal)**
 - 🔲 `reject_call` ← `RejectCall(ctx, callFrom, callID)` + handler `events.CallOffer` (capturar llamadas entrantes).
 
 **🔴 Logout (al final, validación delicada)**
