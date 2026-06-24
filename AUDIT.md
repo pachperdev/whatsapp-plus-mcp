@@ -166,7 +166,7 @@ implementar **Tier A + Tier B paso a paso** (Tier A primero). Tier C NO por ahor
 - 🔲 `vote_poll` ← `BuildPollVote(ctx, pollInfo *types.MessageInfo, optionNames)` → `SendMessage` (reconstruir el `MessageInfo` del poll desde la DB).
 - 🔲 captura de votos entrantes ← `DecryptPollVote(ctx, *events.Message)` en el handler.
 
-**🔵 LOTE B1 — Unirse por código**
+**🔵 LOTE B1 — Unirse por código — ✅ COMPLETO (commit `02f2f60`, validado en vivo)** · fix: el inviter es el chat_jid del mensaje (no el sender LID)
 - 🔲 `get_group_info_from_invite` ← `GetGroupInfoFromInvite(ctx, jid, inviter, code, expiration)`.
 - 🔲 `join_group_with_invite` ← `JoinGroupWithInvite(ctx, jid, inviter, code, expiration)`.
 
