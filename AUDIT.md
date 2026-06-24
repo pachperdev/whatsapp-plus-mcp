@@ -32,7 +32,7 @@ Fuentes: pkg.go.dev/go.mau.fi/whatsmeow · github.com/tulir/whatsmeow/discussion
 
 ---
 
-## ✅ Ya hecho (ver `git log`; 20 commits)
+## ✅ Ya hecho (ver `git log`; 90 commits)
 
 **Base/infra:** T1 captura en vivo · T2 WAL · T3 salientes persistidos · T4 timeout · T5 logging stderr ·
 T6 seguridad (loopback+token+sandbox) · T7 cache TTL · T8 salida estructurada ·
@@ -104,11 +104,11 @@ Client son **wrappers de baja complejidad** (handler REST en el bridge + tool Py
 
 **Tier 3 — requieren event handler nuevo o estado en SQLite (mayor esfuerzo):**
 - ✅ **Media descargable completa** (commit `de8e7f6`, RESUELTO): `extractMediaInfo`/`extractTextContent` ahora capturan **stickers** (.webp), desenrollan **wrappers** (`EphemeralMessage`/`ViewOnceMessage`/`DocumentWithCaptionMessage`) y guardan **captions** de imagen/video/documento. GIFs ya cubiertos (son `VideoMessage`). **`download_media` arreglado** (bug del 403): se persiste el `DirectPath` nativo (columna `direct_path`) en vez de reconstruirlo de la URL. Validado en vivo: imagen/video/audio/documento(PDF)/sticker.
-- 🔲 **Captura de NO-media (metadata, no archivos):** `LocationMessage`/`LiveLocationMessage`, `ContactMessage`/`ContactsArrayMessage` (vCard), `PollCreationMessage` → guardar el dato (no hay archivo que descargar). Además `buildQuotedContext` solo cita texto; citar un sticker/imagen requeriría reconstruir ese `QuotedMessage`.
-- `get_unread_chats` — procesar `events.Receipt` y trackear read-state en SQLite (no hay "unread count" directo).
-- Capturar **edits/revokes entrantes** (`events.Message.IsEdit`, `ProtocolMessage` REVOKE) → reflejar en la DB.
-- Presencia de terceros (`SubscribePresence` + handler `events.Presence` last-seen/online).
-- Votos de encuesta entrantes (`DecryptPollVote`).
+- ✅ **Captura de NO-media (metadata)** — LOTE T3-1 (validado en vivo): `LocationMessage`/`LiveLocationMessage` (coords + nombre/dirección) y `ContactMessage`/`ContactsArrayMessage` (nombre + teléfono parseado del vCard, helper `vcardPhone`) → en `extractTextContent`. (`PollCreationMessage` ya en A4.) Pendiente menor: `buildQuotedContext` solo cita texto (citar sticker/imagen requeriría reconstruir ese `QuotedMessage`).
+- 🔲 `get_unread_chats` — procesar `events.Receipt` y trackear read-state en SQLite (no hay "unread count" directo). **(LOTE T3-3)**
+- 🔲 Capturar **edits/revokes entrantes** (`events.Message.IsEdit`, `ProtocolMessage` REVOKE) → reflejar en la DB. **(LOTE T3-2)**
+- ✅ Presencia de terceros — hecho en **LOTE B2** (`set/subscribe/get_presence` + handlers `events.Presence`/`events.ChatPresence`, unificación lid↔número).
+- ✅ Votos de encuesta entrantes — hecho en **LOTE A4** (`DecryptPollVote` en el handler).
 
 ### FASE 2 — Robustez / correctness
 - ✅ **Manejo de eventos de ban** (commit `761b532`, RESUELTO): el handler captura `events.TemporaryBan` (loggea code+reason+expire y **pausa envíos** vía guard `isTempBanned` en `sendWhatsAppMessage`), `events.ConnectFailure` (registra fallo; `IsLoggedOut()` → marca logout), `events.LoggedOut` (guarda razón), `events.Connected`/`Disconnected` (timestamps). Estado thread-safe (`botStatus` + `sync.RWMutex`). **Validado en vivo:** corte de red (Disconnected+reconnect), cierre de sesión (LoggedOut→needs_qr), re-vinculación por QR.

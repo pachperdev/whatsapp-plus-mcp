@@ -291,6 +291,65 @@ func extractTextContent(msg *waProto.Message) string {
 		return "📨 Invitación a grupo: " + name
 	}
 
+	// Ubicación: no hay archivo que descargar; guardamos coords + nombre/dirección legibles.
+	if loc := msg.GetLocationMessage(); loc != nil {
+		s := fmt.Sprintf("📍 Ubicación: %.6f, %.6f", loc.GetDegreesLatitude(), loc.GetDegreesLongitude())
+		if n := loc.GetName(); n != "" {
+			s += " — " + n
+		}
+		if a := loc.GetAddress(); a != "" {
+			s += " (" + a + ")"
+		}
+		return s
+	}
+	if live := msg.GetLiveLocationMessage(); live != nil {
+		s := fmt.Sprintf("📍 Ubicación en vivo: %.6f, %.6f", live.GetDegreesLatitude(), live.GetDegreesLongitude())
+		if c := live.GetCaption(); c != "" {
+			s += " — " + c
+		}
+		return s
+	}
+
+	// Contacto(s) compartido(s): guardamos nombre + teléfono (parseado del vCard).
+	if c := msg.GetContactMessage(); c != nil {
+		s := "👤 Contacto: " + c.GetDisplayName()
+		if p := vcardPhone(c.GetVcard()); p != "" {
+			s += " · " + p
+		}
+		return s
+	}
+	if ca := msg.GetContactsArrayMessage(); ca != nil {
+		names := make([]string, 0, len(ca.GetContacts()))
+		for _, c := range ca.GetContacts() {
+			n := c.GetDisplayName()
+			if p := vcardPhone(c.GetVcard()); p != "" {
+				n += " (" + p + ")"
+			}
+			names = append(names, n)
+		}
+		s := fmt.Sprintf("👤 %d contactos", len(ca.GetContacts()))
+		if len(names) > 0 {
+			s += ": " + strings.Join(names, ", ")
+		}
+		return s
+	}
+
+	return ""
+}
+
+// vcardPhone extrae el primer teléfono (línea TEL) de un vCard. "" si no hay.
+func vcardPhone(vcard string) string {
+	if vcard == "" {
+		return ""
+	}
+	for _, line := range strings.Split(vcard, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToUpper(line), "TEL") {
+			if i := strings.LastIndex(line, ":"); i >= 0 && i+1 < len(line) {
+				return strings.TrimSpace(line[i+1:])
+			}
+		}
+	}
 	return ""
 }
 
