@@ -193,6 +193,34 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 		mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength)
 }
 
+// MarkMessageRevoked refleja un revoke entrante: marca el mensaje como eliminado
+// in-place SIN tocar el timestamp (no reordena el historial). Devuelve filas afectadas.
+func (store *MessageStore) MarkMessageRevoked(id, chatJID string) (int64, error) {
+	res, err := store.db.Exec(
+		"UPDATE messages SET content = ? WHERE id = ? AND chat_jid = ?",
+		"🗑️ Mensaje eliminado", id, chatJID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// ApplyMessageEdit refleja un edit entrante: reemplaza el contenido por el texto
+// editado (marca "(editado)") in-place SIN tocar el timestamp. Devuelve filas afectadas.
+func (store *MessageStore) ApplyMessageEdit(id, chatJID, newText string) (int64, error) {
+	res, err := store.db.Exec(
+		"UPDATE messages SET content = ? WHERE id = ? AND chat_jid = ?",
+		newText+" (editado)", id, chatJID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // Get messages from a chat
 func (store *MessageStore) GetMessages(chatJID string, limit int) ([]Message, error) {
 	rows, err := store.db.Query(
@@ -334,6 +362,26 @@ func extractTextContent(msg *waProto.Message) string {
 		return s
 	}
 
+	return ""
+}
+
+// extractEditedText obtiene el texto nuevo de un edit descifrado. El plaintext puede venir
+// como contenido directo, anidado en ProtocolMessage.EditedMessage, o en un EditedMessage wrapper.
+func extractEditedText(m *waProto.Message) string {
+	if m == nil {
+		return ""
+	}
+	if t := extractTextContent(m); t != "" {
+		return t
+	}
+	if pm := m.GetProtocolMessage(); pm != nil {
+		if t := extractTextContent(pm.GetEditedMessage()); t != "" {
+			return t
+		}
+	}
+	if em := m.GetEditedMessage().GetMessage(); em != nil {
+		return extractTextContent(em)
+	}
 	return ""
 }
 
@@ -1181,6 +1229,58 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	// Save message to database
 	chatJID := msg.Info.Chat.String()
 	sender := msg.Info.Sender.User
+
+	// T3-2: edits y revokes entrantes -> se reflejan in-place en la DB SIN reordenar el
+	// historial (no se toca el timestamp ni el last_message_time del chat).
+	tsLog := msg.Info.Timestamp.Format("2006-01-02 15:04:05")
+
+	// Revoke ("borrar para todos"): llega como ProtocolMessage REVOKE intacto.
+	if pm := msg.Message.GetProtocolMessage(); pm != nil && pm.GetType() == waProto.ProtocolMessage_REVOKE {
+		if targetID := pm.GetKey().GetID(); targetID != "" {
+			if _, err := messageStore.MarkMessageRevoked(targetID, chatJID); err != nil {
+				logger.Warnf("Failed to apply revoke for %s: %v", targetID, err)
+			} else {
+				fmt.Printf("[%s] 🗑️ %s eliminó el mensaje %s\n", tsLog, sender, targetID)
+			}
+		}
+		return
+	}
+
+	// Edit moderno: llega como SecretEncryptedMessage (contenido CIFRADO) con
+	// secretEncType=MESSAGE_EDIT y targetMessageKey apuntando al mensaje original.
+	// Hay que descifrarlo con la clave secreta del mensaje target (igual que poll votes).
+	if sec := msg.Message.GetSecretEncryptedMessage(); sec != nil {
+		// binary/proto no re-exporta la constante del enum; comparamos por nombre.
+		if sec.GetSecretEncType().String() == "MESSAGE_EDIT" {
+			targetID := sec.GetTargetMessageKey().GetID()
+			if decrypted, err := client.DecryptSecretEncryptedMessage(context.Background(), msg); err != nil {
+				logger.Warnf("Failed to decrypt edit for %s: %v", targetID, err)
+			} else if newText := extractEditedText(decrypted); targetID != "" && newText != "" {
+				if n, err := messageStore.ApplyMessageEdit(targetID, chatJID, newText); err != nil {
+					logger.Warnf("Failed to apply edit for %s: %v", targetID, err)
+				} else if n > 0 {
+					fmt.Printf("[%s] ✏️ %s editó el mensaje %s\n", tsLog, sender, targetID)
+				}
+			}
+		}
+		return
+	}
+
+	// Edit ya desenvuelto (history-sync/webMsg): IsEdit=true, msg.Info.ID = original.
+	if msg.IsEdit {
+		if newText := extractTextContent(msg.Message); newText != "" {
+			if n, err := messageStore.ApplyMessageEdit(msg.Info.ID, chatJID, newText); err != nil {
+				logger.Warnf("Failed to apply edit for %s: %v", msg.Info.ID, err)
+				return
+			} else if n > 0 {
+				fmt.Printf("[%s] ✏️ %s editó el mensaje %s\n", tsLog, sender, msg.Info.ID)
+				return
+			}
+			// n == 0: no teníamos el original -> cae al flujo normal e inserta el texto editado.
+		} else {
+			return
+		}
+	}
 
 	// Get appropriate chat name (pass nil for conversation since we don't have one for regular messages)
 	name := GetChatName(client, messageStore, msg.Info.Chat, chatJID, nil, sender, logger)
