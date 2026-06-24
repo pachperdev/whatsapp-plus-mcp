@@ -55,7 +55,9 @@ from whatsapp import (
     vote_poll as whatsapp_vote_poll,
     set_group_join_approval as whatsapp_set_group_join_approval,
     get_group_join_requests as whatsapp_get_group_join_requests,
-    review_group_join_request as whatsapp_review_group_join_request
+    review_group_join_request as whatsapp_review_group_join_request,
+    get_group_info_from_invite as whatsapp_get_group_info_from_invite,
+    join_group_with_invite as whatsapp_join_group_with_invite
 )
 
 # Initialize FastMCP server
@@ -773,6 +775,32 @@ def review_group_join_request(group_jid: str, participants: List[str], action: s
         action: "approve" or "reject"
     """
     return whatsapp_review_group_join_request(group_jid, participants, action)
+
+@mcp.tool()
+def get_group_info_from_invite(chat_jid: str, invite_message_id: str) -> Dict[str, Any]:
+    """Inspect a group from a received group-invite message, WITHOUT joining.
+
+    Use the message_id of a captured group-invite message (media_type "group_invite").
+
+    Args:
+        chat_jid: The chat JID where the invite message is
+        invite_message_id: The message ID of the group-invite message
+    """
+    return whatsapp_get_group_info_from_invite(chat_jid, invite_message_id)
+
+@mcp.tool()
+def join_group_with_invite(chat_jid: str, invite_message_id: str) -> Dict[str, Any]:
+    """Join a group using a received group-invite message (not a chat.whatsapp.com link).
+
+    Use the message_id of a captured group-invite message (media_type "group_invite"). For
+    chat.whatsapp.com links use join_group instead.
+
+    Args:
+        chat_jid: The chat JID where the invite message is
+        invite_message_id: The message ID of the group-invite message
+    """
+    success, status_message = whatsapp_join_group_with_invite(chat_jid, invite_message_id)
+    return {"success": success, "message": status_message}
 
 if __name__ == "__main__":
     # Initialize and run the server

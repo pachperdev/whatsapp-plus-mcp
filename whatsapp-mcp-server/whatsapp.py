@@ -1394,3 +1394,16 @@ def get_group_join_requests(group_jid: str) -> Dict[str, Any]:
 def review_group_join_request(group_jid: str, participants: List[str], action: str) -> Dict[str, Any]:
     """Aprueba o rechaza solicitudes de ingreso. action: approve|reject (requiere admin)."""
     return _bridge_post("review_group_join_request", {"group_jid": group_jid, "participants": participants, "action": action})
+
+
+# --- Lote B1: unirse por código de invitación ---
+
+def get_group_info_from_invite(chat_jid: str, invite_message_id: str) -> Dict[str, Any]:
+    """Inspecciona un grupo a partir de una invitacion recibida (sin unirse)."""
+    return _bridge_post("group_info_from_invite", {"chat_jid": chat_jid, "invite_message_id": invite_message_id})
+
+
+def join_group_with_invite(chat_jid: str, invite_message_id: str) -> Tuple[bool, str]:
+    """Se une a un grupo usando una invitacion recibida (mensaje de invitacion, no link)."""
+    d = _bridge_post("join_group_with_invite", {"chat_jid": chat_jid, "invite_message_id": invite_message_id})
+    return d.get("success", False), d.get("message", "")

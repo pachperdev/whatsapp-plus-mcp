@@ -282,6 +282,15 @@ func extractTextContent(msg *waProto.Message) string {
 		return poll.GetName()
 	}
 
+	// Invitación a grupo (por mensaje de invitación, no link).
+	if inv := msg.GetGroupInviteMessage(); inv != nil {
+		name := inv.GetGroupName()
+		if name == "" {
+			name = inv.GetGroupJID()
+		}
+		return "📨 Invitación a grupo: " + name
+	}
+
 	return ""
 }
 
@@ -475,6 +484,12 @@ type PollVoteRequest struct {
 	ChatJID       string   `json:"chat_jid"`
 	PollMessageID string   `json:"poll_message_id"`
 	Options       []string `json:"options"`
+}
+
+// InviteActionRequest opera sobre una invitación de grupo capturada (por su message_id)
+type InviteActionRequest struct {
+	ChatJID         string `json:"chat_jid"`
+	InviteMessageID string `json:"invite_message_id"`
 }
 
 // botStatus mantiene el estado de conexion/sesion/ban del cliente para /api/status
@@ -696,6 +711,39 @@ func parseParticipantJIDs(raw []string) ([]types.JID, error) {
 		jids = append(jids, j)
 	}
 	return jids, nil
+}
+
+// loadGroupInvite recupera de la DB los datos de una invitacion de grupo capturada
+// (media_type="group_invite"): group_jid/code/expiration del JSON en filename; inviter = sender.
+func loadGroupInvite(store *MessageStore, chatJID, msgID string) (groupJID types.JID, inviter types.JID, code string, expiration int64, err error) {
+	var filename string
+	if e := store.db.QueryRow(
+		"SELECT filename FROM messages WHERE id = ? AND chat_jid = ? AND media_type = 'group_invite' LIMIT 1",
+		msgID, chatJID,
+	).Scan(&filename); e != nil {
+		return groupJID, inviter, "", 0, fmt.Errorf("invitacion de grupo no encontrada en la DB")
+	}
+	var data struct {
+		GroupJID   string `json:"group_jid"`
+		Code       string `json:"code"`
+		Expiration int64  `json:"expiration"`
+	}
+	if e := json.Unmarshal([]byte(filename), &data); e != nil {
+		return groupJID, inviter, "", 0, fmt.Errorf("datos de invitacion corruptos: %w", e)
+	}
+	groupJID, e := types.ParseJID(data.GroupJID)
+	if e != nil {
+		return groupJID, inviter, "", 0, fmt.Errorf("group_jid invalido: %w", e)
+	}
+	// El inviter (atributo "admin" del IQ) es quien envió la invitación. Las invitaciones de
+	// grupo llegan por mensaje PRIVADO, así que el chat donde llegó ES el JID del inviter.
+	// (Reconstruirlo del sender fallaba: el sender se guarda como LID sin sufijo y terminaba
+	// como @s.whatsapp.net falso -> el server respondía 410 gone.)
+	inviter, e = types.ParseJID(chatJID)
+	if e != nil {
+		return groupJID, inviter, "", 0, fmt.Errorf("chat_jid (inviter) invalido: %w", e)
+	}
+	return groupJID, inviter, data.Code, data.Expiration, nil
 }
 
 func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, quotedMessageID string, mentions []string) (bool, string) {
@@ -990,6 +1038,18 @@ func extractMediaInfo(msg *waProto.Message) (mediaType string, filename string, 
 		}
 		b, _ := json.Marshal(names)
 		return "poll", string(b), "", "", nil, nil, nil, 0
+	}
+
+	// Invitación a grupo: se persiste (media_type="group_invite") con los datos necesarios
+	// para unirse (group_jid/code/expiration) como JSON en "filename"; el inviter es el sender.
+	if inv := msg.GetGroupInviteMessage(); inv != nil {
+		data, _ := json.Marshal(map[string]interface{}{
+			"group_jid":  inv.GetGroupJID(),
+			"code":       inv.GetInviteCode(),
+			"expiration": inv.GetInviteExpiration(),
+			"group_name": inv.GetGroupName(),
+		})
+		return "group_invite", string(data), "", "", nil, nil, nil, 0
 	}
 
 	return "", "", "", "", nil, nil, nil, 0
@@ -2576,6 +2636,58 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group photo updated", "picture_id": pictureID})
+	}))
+
+	// --- Lote B1: unirse por código de invitación ---
+
+	// Handler: get group info from invite (inspeccionar sin unirse)
+	http.HandleFunc("/api/group_info_from_invite", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req InviteActionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		gjid, inviter, code, exp, err := loadGroupInvite(messageStore, req.ChatJID, req.InviteMessageID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		info, err := client.GetGroupInfoFromInvite(context.Background(), gjid, inviter, code, exp)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true, "group_jid": info.JID.String(),
+			"name": info.Name, "participant_count": len(info.Participants),
+		})
+	}))
+
+	// Handler: join group with invite (unirse por código de invitación)
+	http.HandleFunc("/api/join_group_with_invite", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req InviteActionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		gjid, inviter, code, exp, err := loadGroupInvite(messageStore, req.ChatJID, req.InviteMessageID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		if err := client.JoinGroupWithInvite(context.Background(), gjid, inviter, code, exp); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "joined group via invite", "group_jid": gjid.String()})
 	}))
 
 	// --- Lote A3: solicitudes de ingreso a grupos (requieren admin) ---
