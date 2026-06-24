@@ -1407,3 +1407,23 @@ def join_group_with_invite(chat_jid: str, invite_message_id: str) -> Tuple[bool,
     """Se une a un grupo usando una invitacion recibida (mensaje de invitacion, no link)."""
     d = _bridge_post("join_group_with_invite", {"chat_jid": chat_jid, "invite_message_id": invite_message_id})
     return d.get("success", False), d.get("message", "")
+
+
+# --- Lote B2: presencia ---
+
+def set_presence(state: str = "available") -> Tuple[bool, str]:
+    """Cambia la presencia propia. state: available|unavailable. available es requisito para
+    RECIBIR la presencia de otros."""
+    d = _bridge_post("set_presence", {"state": state})
+    return d.get("success", False), d.get("message", "")
+
+
+def subscribe_presence(jid: str) -> Tuple[bool, str]:
+    """Se suscribe a la presencia de un contacto (necesario para recibir su online/last-seen)."""
+    d = _bridge_post("subscribe_presence", {"jid": jid})
+    return d.get("success", False), d.get("message", "")
+
+
+def get_presence(jid: str) -> Dict[str, Any]:
+    """Ultimo estado de presencia conocido de un contacto (online, last_seen, typing)."""
+    return _bridge_post("get_presence", {"jid": jid})

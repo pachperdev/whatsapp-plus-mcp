@@ -57,7 +57,10 @@ from whatsapp import (
     get_group_join_requests as whatsapp_get_group_join_requests,
     review_group_join_request as whatsapp_review_group_join_request,
     get_group_info_from_invite as whatsapp_get_group_info_from_invite,
-    join_group_with_invite as whatsapp_join_group_with_invite
+    join_group_with_invite as whatsapp_join_group_with_invite,
+    set_presence as whatsapp_set_presence,
+    subscribe_presence as whatsapp_subscribe_presence,
+    get_presence as whatsapp_get_presence
 )
 
 # Initialize FastMCP server
@@ -801,6 +804,40 @@ def join_group_with_invite(chat_jid: str, invite_message_id: str) -> Dict[str, A
     """
     success, status_message = whatsapp_join_group_with_invite(chat_jid, invite_message_id)
     return {"success": success, "message": status_message}
+
+@mcp.tool()
+def set_presence(state: str = "available") -> Dict[str, Any]:
+    """Set your own presence. "available" (online) is REQUIRED to receive others' presence updates.
+
+    Args:
+        state: "available" or "unavailable"
+    """
+    success, status_message = whatsapp_set_presence(state)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def subscribe_presence(jid: str) -> Dict[str, Any]:
+    """Subscribe to a contact's presence so you start receiving their online/last-seen updates.
+
+    Call set_presence("available") first. Updates arrive asynchronously; read them with get_presence.
+
+    Args:
+        jid: The contact JID
+    """
+    success, status_message = whatsapp_subscribe_presence(jid)
+    return {"success": success, "message": status_message}
+
+@mcp.tool()
+def get_presence(jid: str) -> Dict[str, Any]:
+    """Get the last known presence of a contact: online, last_seen, typing.
+
+    Requires having called subscribe_presence and set_presence("available") earlier, and waiting
+    for the contact to change state. Returns tracked=false if no data yet.
+
+    Args:
+        jid: The contact JID
+    """
+    return whatsapp_get_presence(jid)
 
 if __name__ == "__main__":
     # Initialize and run the server

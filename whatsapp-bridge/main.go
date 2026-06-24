@@ -492,6 +492,68 @@ type InviteActionRequest struct {
 	InviteMessageID string `json:"invite_message_id"`
 }
 
+// SetPresenceRequest cambia la presencia propia (available/unavailable)
+type SetPresenceRequest struct {
+	State string `json:"state"` // available | unavailable
+}
+
+// presenceInfo es el último estado de presencia conocido de un contacto.
+type presenceInfo struct {
+	Online    bool
+	LastSeen  time.Time
+	Typing    bool
+	UpdatedAt time.Time
+}
+
+// presenceTracker guarda en memoria la presencia de terceros: online/last-seen (events.Presence)
+// y typing (events.ChatPresence). Thread-safe; lo escribe el event handler.
+type presenceTracker struct {
+	mu     sync.RWMutex
+	states map[string]presenceInfo
+}
+
+var presences = &presenceTracker{states: make(map[string]presenceInfo)}
+
+func (p *presenceTracker) onPresence(from string, unavailable bool, lastSeen time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	cur := p.states[from]
+	cur.Online = !unavailable
+	if !lastSeen.IsZero() {
+		cur.LastSeen = lastSeen
+	}
+	cur.UpdatedAt = time.Now()
+	p.states[from] = cur
+}
+
+func (p *presenceTracker) onChatPresence(from string, composing bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	cur := p.states[from]
+	cur.Typing = composing
+	cur.UpdatedAt = time.Now()
+	p.states[from] = cur
+}
+
+func (p *presenceTracker) get(jid string) (presenceInfo, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	info, ok := p.states[jid]
+	return info, ok
+}
+
+// canonicalPresenceKey normaliza un JID a una clave estable para el tracker: si es @lid lo
+// resuelve a su número (PN). Así la presencia (que suele llegar por @lid) se guarda y se
+// consulta por la misma clave, sin importar si el caller usa el número o el lid.
+func canonicalPresenceKey(client *whatsmeow.Client, jid types.JID) string {
+	if jid.Server == types.HiddenUserServer {
+		if pn, err := client.Store.LIDs.GetPNForLID(context.Background(), jid); err == nil && pn.User != "" {
+			return pn.ToNonAD().String()
+		}
+	}
+	return jid.ToNonAD().String()
+}
+
 // botStatus mantiene el estado de conexion/sesion/ban del cliente para /api/status
 // y para pausar envios ante un ban temporal. Thread-safe (lo escribe el event handler).
 type botStatus struct {
@@ -2638,6 +2700,91 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group photo updated", "picture_id": pictureID})
 	}))
 
+	// --- Lote B2: presencia ---
+
+	// Handler: set own presence (available/unavailable). available es requisito para RECIBIR
+	// la presencia de otros.
+	http.HandleFunc("/api/set_presence", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req SetPresenceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		var p types.Presence
+		switch req.State {
+		case "available":
+			p = types.PresenceAvailable
+		case "unavailable":
+			p = types.PresenceUnavailable
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "state must be available/unavailable"})
+			return
+		}
+		if err := client.SendPresence(context.Background(), p); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "presence sent", "state": req.State})
+	}))
+
+	// Handler: subscribe to a contact's presence (necesario para recibir su online/last-seen)
+	http.HandleFunc("/api/subscribe_presence", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req BusinessProfileRequest // {jid}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.JID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid jid"})
+			return
+		}
+		if err := client.SubscribePresence(context.Background(), jid); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "subscribed to presence"})
+	}))
+
+	// Handler: get last known presence of a contact (del tracker en memoria)
+	http.HandleFunc("/api/get_presence", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req BusinessProfileRequest // {jid}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			return
+		}
+		jid, err := types.ParseJID(req.JID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid jid"})
+			return
+		}
+		info, ok := presences.get(canonicalPresenceKey(client, jid))
+		if !ok {
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "tracked": false, "message": "sin datos de presencia aún (subscribe_presence + esperar a que cambie de estado)"})
+			return
+		}
+		out := map[string]interface{}{
+			"success": true, "tracked": true,
+			"online": info.Online, "typing": info.Typing,
+			"updated_at": info.UpdatedAt.Format(time.RFC3339),
+		}
+		if !info.LastSeen.IsZero() {
+			out["last_seen"] = info.LastSeen.Format(time.RFC3339)
+		}
+		json.NewEncoder(w).Encode(out)
+	}))
+
 	// --- Lote B1: unirse por código de invitación ---
 
 	// Handler: get group info from invite (inspeccionar sin unirse)
@@ -2972,6 +3119,14 @@ func main() {
 			if v.Reason.IsLoggedOut() {
 				status.onLoggedOut(v.Reason.String())
 			}
+
+		case *events.Presence:
+			// Presencia de terceros: online/offline + last-seen (requiere SubscribePresence + SendPresence).
+			presences.onPresence(canonicalPresenceKey(client, v.From), v.Unavailable, v.LastSeen)
+
+		case *events.ChatPresence:
+			// Typing de terceros (composing/paused) en un chat.
+			presences.onChatPresence(canonicalPresenceKey(client, v.MessageSource.Sender), v.State == types.ChatPresenceComposing)
 		}
 	})
 
