@@ -55,17 +55,15 @@ combinables con reply, commit `a30d453`) · ✅ crear grupo + gestionar particip
 
 **FASE 3 — COMPLETA:** ✅ migración a `modernc.org/sqlite` sin CGO (commit `caf5df3`) · ✅ batch tx por conversación en history-sync (M2) + reuso de conexión HTTP (commit `bb4c8d6`).
 
-➡️ **FASE 1, 2 y 3 cerradas.** Próximo (y último): **FASE 4 — Calidad/infra** (SDK mcp 1.6→1.28, structured output Pydantic, resources/prompts, tests + CI + README). Tier 3 funcional (captura no-texto, presencia, etc.) queda como ampliación opcional.
+**GAPS Tier A + B + Logout — COMPLETO** (jun-2026): A1 perfil&cuenta · A2 admin grupos · A4 encuestas votar/leer · A3 solicitudes de ingreso · B1 unirse por código · B2 presencia (con unificación lid↔número) · B3 registro de llamadas · Logout. Captura ampliada: media descargable (stickers/wrappers/captions), polls, invitaciones de grupo, votos, llamadas, presencia. Todo validado en vivo vía MCP / dispositivos físicos.
 
-**Tools actuales (43):** search_contacts, list_messages, list_chats, get_chat,
-get_direct_chat_by_contact, get_contact_chats, get_last_interaction, get_message_context,
-send_message (con reply_to), send_file, send_audio_message, download_media, list_groups, mark_as_read,
-react_to_message, refresh_contacts, edit_message, delete_message, send_typing, check_whatsapp,
-get_profile_picture, get_user_info, list_all_contacts, send_poll, get_group_participants,
-get_group_invite_link, join_group, leave_group, set_group_name, set_group_topic,
-block_contact, unblock_contact, mute_chat, pin_chat, archive_chat, mark_chat, star_message,
-get_chat_settings, request_more_history, create_group, update_group_participants,
-set_disappearing_messages, get_status.
+➡️ **FASE 1, 2, 3 + Tier A/B cerrados.** Próximo (y único pendiente): **FASE 4 — Calidad/infra** (SDK mcp 1.6→1.28, structured output Pydantic, resources/prompts, tests + CI + README + linters).
+
+**Tools actuales (61):** las 43 previas + set_status_message, get_business_profile, get_user_devices,
+set_default_disappearing, set_group_description, set_group_announce, set_group_locked, set_group_photo,
+vote_poll, set_group_join_approval, get_group_join_requests, review_group_join_request,
+get_group_info_from_invite, join_group_with_invite, set_presence, subscribe_presence, get_presence, logout.
+(B3 registro de llamadas no agrega tool: captura events.CallOffer → mensaje "call" en list_messages.)
 
 ---
 
@@ -177,7 +175,7 @@ implementar **Tier A + Tier B paso a paso** (Tier A primero). Tier C NO por ahor
 **🔵 LOTE B3 — Llamadas — ✅ COMPLETO (commit, solo registro; RejectCall descartado por bajo valor en cuenta personal)**
 - 🔲 `reject_call` ← `RejectCall(ctx, callFrom, callID)` + handler `events.CallOffer` (capturar llamadas entrantes).
 
-**🔴 Logout (al final, validación delicada)**
+**🔴 Logout — ✅ COMPLETO (commit `0d8ff5f`, validado: logout → re-vinculación por QR)**
 - 🔲 `logout` ← `Logout(ctx)` · `/api/logout`. Desvincula la sesión (requiere re-escanear QR; usar el flujo QR→PNG→open ya probado).
 
 ### Tier C — NO se implementa (jun-2026, salvo que el caso de uso lo pida)
