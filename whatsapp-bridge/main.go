@@ -32,8 +32,8 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	waBinary "go.mau.fi/whatsmeow/binary"
-	waProto "go.mau.fi/whatsmeow/binary/proto"
 	waCommon "go.mau.fi/whatsmeow/proto/waCommon"
+	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -115,7 +115,7 @@ func NewMessageStore() (*MessageStore, error) {
 		);
 	`)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
 	}
 
@@ -270,7 +270,7 @@ func (store *MessageStore) GetUnreadChats() ([]UnreadChat, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []UnreadChat
 	for rows.Next() {
 		var c UnreadChat
@@ -291,7 +291,7 @@ func (store *MessageStore) GetMessages(chatJID string, limit int) ([]Message, er
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []Message
 	for rows.Next() {
@@ -314,7 +314,7 @@ func (store *MessageStore) GetChats() (map[string]time.Time, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	chats := make(map[string]time.Time)
 	for rows.Next() {
@@ -331,7 +331,7 @@ func (store *MessageStore) GetChats() (map[string]time.Time, error) {
 }
 
 // Extract text content from a message
-func extractTextContent(msg *waProto.Message) string {
+func extractTextContent(msg *waE2E.Message) string {
 	if msg == nil {
 		return ""
 	}
@@ -428,7 +428,7 @@ func extractTextContent(msg *waProto.Message) string {
 
 // extractEditedText obtiene el texto nuevo de un edit descifrado. El plaintext puede venir
 // como contenido directo, anidado en ProtocolMessage.EditedMessage, o en un EditedMessage wrapper.
-func extractEditedText(m *waProto.Message) string {
+func extractEditedText(m *waE2E.Message) string {
 	if m == nil {
 		return ""
 	}
@@ -460,6 +460,17 @@ func vcardPhone(vcard string) string {
 		}
 	}
 	return ""
+}
+
+// writeJSON serializa v como JSON en el ResponseWriter (el Content-Type y el status deben
+// fijarse antes de llamar). Si la codificación falla —normalmente porque el cliente cerró la
+// conexión— solo se registra: la respuesta ya está parcialmente enviada y no hay recuperación
+// posible. Centraliza el manejo del error de Encode en los handlers HTTP.
+func writeJSON(w http.ResponseWriter, v interface{}) {
+	enc := json.NewEncoder(w)
+	if err := enc.Encode(v); err != nil {
+		fmt.Println("Error al codificar respuesta JSON:", err)
+	}
 }
 
 // SendMessageResponse represents the response for the send message API
@@ -855,7 +866,7 @@ func lastMsgKey(store *MessageStore, chatJID types.JID) (*waCommon.MessageKey, t
 // buscandolo en messages.db. En chats directos el Participant (autor del citado) es
 // uno mismo si el mensaje es propio, o el chat (contacto) si fue recibido.
 // Nota: en grupos el autor real puede no ser el chat_jid (limitacion conocida).
-func buildQuotedContext(store *MessageStore, client *whatsmeow.Client, quotedID string) *waProto.ContextInfo {
+func buildQuotedContext(store *MessageStore, client *whatsmeow.Client, quotedID string) *waE2E.ContextInfo {
 	var chatJID, sender, content string
 	var isFromMe bool
 	err := store.db.QueryRow(
@@ -880,12 +891,12 @@ func buildQuotedContext(store *MessageStore, client *whatsmeow.Client, quotedID 
 		// Chat directo: el autor es el contacto (el propio chat).
 		participant = chatJID
 	}
-	ctxInfo := &waProto.ContextInfo{
+	ctxInfo := &waE2E.ContextInfo{
 		StanzaID:    proto.String(quotedID),
 		Participant: proto.String(participant),
 	}
 	if content != "" {
-		ctxInfo.QuotedMessage = &waProto.Message{Conversation: proto.String(content)}
+		ctxInfo.QuotedMessage = &waE2E.Message{Conversation: proto.String(content)}
 	}
 	return ctxInfo
 }
@@ -1006,7 +1017,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		}
 	}
 
-	msg := &waProto.Message{}
+	msg := &waE2E.Message{}
 	// Tipo/nombre de media para persistir el saliente en la DB (ver final de la funcion)
 	var dbMediaType, dbFilename string
 
@@ -1089,7 +1100,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		// Create the appropriate message type based on media type
 		switch mediaType {
 		case whatsmeow.MediaImage:
-			msg.ImageMessage = &waProto.ImageMessage{
+			msg.ImageMessage = &waE2E.ImageMessage{
 				Caption:       proto.String(message),
 				Mimetype:      proto.String(mimeType),
 				URL:           &resp.URL,
@@ -1117,7 +1128,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 				fmt.Printf("Not an Ogg Opus file: %s\n", mimeType)
 			}
 
-			msg.AudioMessage = &waProto.AudioMessage{
+			msg.AudioMessage = &waE2E.AudioMessage{
 				Mimetype:      proto.String(mimeType),
 				URL:           &resp.URL,
 				DirectPath:    &resp.DirectPath,
@@ -1130,7 +1141,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 				Waveform:      waveform,
 			}
 		case whatsmeow.MediaVideo:
-			msg.VideoMessage = &waProto.VideoMessage{
+			msg.VideoMessage = &waE2E.VideoMessage{
 				Caption:       proto.String(message),
 				Mimetype:      proto.String(mimeType),
 				URL:           &resp.URL,
@@ -1141,7 +1152,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 				FileLength:    &resp.FileLength,
 			}
 		case whatsmeow.MediaDocument:
-			msg.DocumentMessage = &waProto.DocumentMessage{
+			msg.DocumentMessage = &waE2E.DocumentMessage{
 				Title:         proto.String(mediaPath[strings.LastIndex(mediaPath, "/")+1:]),
 				Caption:       proto.String(message),
 				Mimetype:      proto.String(mimeType),
@@ -1156,18 +1167,18 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 	} else {
 		// Texto: puede llevar reply (ContextInfo con QuotedMessage) y/o menciones (MentionedJID).
 		// Si no hay ninguno, se envia como Conversation plano.
-		var ctxInfo *waProto.ContextInfo
+		var ctxInfo *waE2E.ContextInfo
 		if quotedMessageID != "" {
 			ctxInfo = buildQuotedContext(messageStore, client, quotedMessageID)
 		}
 		if mentionJIDs := resolveMentions(message, mentions); len(mentionJIDs) > 0 {
 			if ctxInfo == nil {
-				ctxInfo = &waProto.ContextInfo{}
+				ctxInfo = &waE2E.ContextInfo{}
 			}
 			ctxInfo.MentionedJID = mentionJIDs
 		}
 		if ctxInfo != nil {
-			msg.ExtendedTextMessage = &waProto.ExtendedTextMessage{
+			msg.ExtendedTextMessage = &waE2E.ExtendedTextMessage{
 				Text:        proto.String(message),
 				ContextInfo: ctxInfo,
 			}
@@ -1207,7 +1218,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 }
 
 // Extract media info from a message
-func extractMediaInfo(msg *waProto.Message) (mediaType string, filename string, url string, directPath string, mediaKey []byte, fileSHA256 []byte, fileEncSHA256 []byte, fileLength uint64) {
+func extractMediaInfo(msg *waE2E.Message) (mediaType string, filename string, url string, directPath string, mediaKey []byte, fileSHA256 []byte, fileEncSHA256 []byte, fileLength uint64) {
 	if msg == nil {
 		return "", "", "", "", nil, nil, nil, 0
 	}
@@ -1296,7 +1307,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	tsLog := msg.Info.Timestamp.Format("2006-01-02 15:04:05")
 
 	// Revoke ("borrar para todos"): llega como ProtocolMessage REVOKE intacto.
-	if pm := msg.Message.GetProtocolMessage(); pm != nil && pm.GetType() == waProto.ProtocolMessage_REVOKE {
+	if pm := msg.Message.GetProtocolMessage(); pm != nil && pm.GetType() == waE2E.ProtocolMessage_REVOKE {
 		if targetID := pm.GetKey().GetID(); targetID != "" {
 			if _, err := messageStore.MarkMessageRevoked(targetID, chatJID); err != nil {
 				logger.Warnf("Failed to apply revoke for %s: %v", targetID, err)
@@ -1725,7 +1736,9 @@ func blockViaLID(client *whatsmeow.Client, jid types.JID, action events.Blocklis
 		},
 		Content: []waBinary.Node{{Tag: "item", Attrs: attrs}},
 	}
-	if err := client.DangerousInternals().SendNode(ctx, node); err != nil {
+	// DangerousInternals es la única vía para enviar este IQ con el formato nuevo: sendIQ de
+	// whatsmeow es privado y UpdateBlocklist aún manda el formato viejo (ver doc de la función).
+	if err := client.DangerousInternals().SendNode(ctx, node); err != nil { //nolint:staticcheck // API interna necesaria, sin equivalente público
 		return false, fmt.Errorf("send blocklist iq: %v", err)
 	}
 
@@ -1806,7 +1819,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		}
 
 		// Send response
-		json.NewEncoder(w).Encode(SendMessageResponse{
+		writeJSON(w, SendMessageResponse{
 			Success: success,
 			Message: message,
 		})
@@ -1847,7 +1860,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			}
 
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(DownloadMediaResponse{
+			writeJSON(w, DownloadMediaResponse{
 				Success: false,
 				Message: fmt.Sprintf("Failed to download media: %s", errMsg),
 			})
@@ -1855,7 +1868,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		}
 
 		// Send successful response
-		json.NewEncoder(w).Encode(DownloadMediaResponse{
+		writeJSON(w, DownloadMediaResponse{
 			Success:  true,
 			Message:  fmt.Sprintf("Successfully downloaded %s media", mediaType),
 			Filename: filename,
@@ -1869,7 +1882,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		groups, err := client.GetJoinedGroups(context.Background())
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		type groupOut struct {
@@ -1892,7 +1905,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 				Owner:            g.OwnerJID.String(),
 			})
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "groups": out})
+		writeJSON(w, map[string]interface{}{"success": true, "groups": out})
 	}))
 
 	// Handler: mark messages as read
@@ -1901,13 +1914,13 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req MarkReadRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		chat, err := types.ParseJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
 		sender := chat // chats directos: el remitente es el propio chat
@@ -1922,12 +1935,12 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		}
 		if err := client.MarkRead(context.Background(), ids, time.Now(), chat, sender); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		// T3-3: el chat queda leído localmente.
 		_, _ = messageStore.ClearChatUnread(req.ChatJID)
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "marked as read"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "marked as read"})
 	}))
 
 	// Handler: list chats with unread (incoming) messages tracked live.
@@ -1936,7 +1949,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		chats, err := messageStore.GetUnreadChats()
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		out := make([]map[string]interface{}, 0, len(chats))
@@ -1947,7 +1960,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 				"last_time":    c.LastTime,
 			})
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "chats": out})
+		writeJSON(w, map[string]interface{}{"success": true, "chats": out})
 	}))
 
 	// Handler: react to a message with an emoji
@@ -1956,13 +1969,13 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req ReactRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		chat, err := types.ParseJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
 		sender := chat
@@ -1974,10 +1987,10 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		reaction := client.BuildReaction(chat, sender, types.MessageID(req.MessageID), req.Emoji)
 		if _, err := client.SendMessage(context.Background(), chat, reaction); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "reaction sent"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "reaction sent"})
 	}))
 
 	// Handler: edit a previously sent message
@@ -1986,23 +1999,23 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req EditRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		chat, err := types.ParseJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
-		newContent := &waProto.Message{Conversation: proto.String(req.NewText)}
+		newContent := &waE2E.Message{Conversation: proto.String(req.NewText)}
 		edit := client.BuildEdit(chat, types.MessageID(req.MessageID), newContent)
 		if _, err := client.SendMessage(context.Background(), chat, edit); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "message edited"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "message edited"})
 	}))
 
 	// Handler: revoke (delete for everyone) a message
@@ -2011,13 +2024,13 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req RevokeRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		chat, err := types.ParseJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
 		var sender types.JID // vacio = revocar mensaje propio
@@ -2029,10 +2042,10 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		revoke := client.BuildRevoke(chat, sender, types.MessageID(req.MessageID))
 		if _, err := client.SendMessage(context.Background(), chat, revoke); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "message revoked"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "message revoked"})
 	}))
 
 	// Handler: send chat presence (typing / recording)
@@ -2041,13 +2054,13 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req TypingRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		chat, err := types.ParseJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
 		state := types.ChatPresenceComposing
@@ -2060,10 +2073,10 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		}
 		if err := client.SendChatPresence(context.Background(), chat, state, media); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "presence sent"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "presence sent"})
 	}))
 
 	// Handler: send a poll
@@ -2072,18 +2085,18 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req PollRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		chat, err := types.ParseJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
 		if req.Question == "" || len(req.Options) < 2 {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "poll needs a question and at least 2 options"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "poll needs a question and at least 2 options"})
 			return
 		}
 		selectable := req.SelectableCount
@@ -2094,7 +2107,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		resp, err := client.SendMessage(context.Background(), chat, poll)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		// Persistir el poll saliente (media_type="poll", opciones en filename JSON) para poder
@@ -2109,7 +2122,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			_ = messageStore.StoreMessage(resp.ID, chat.String(), senderUser, req.Question, resp.Timestamp, true,
 				"poll", string(optsB), "", "", nil, nil, nil, 0)
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "poll sent", "message_id": resp.ID})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "poll sent", "message_id": resp.ID})
 	}))
 
 	// Handler: check if phone numbers are on WhatsApp
@@ -2118,13 +2131,13 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req CheckWhatsAppRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		resp, err := client.IsOnWhatsApp(context.Background(), req.Phones)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		normPhone := func(s string) string {
@@ -2160,7 +2173,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 				})
 			}
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "results": out})
+		writeJSON(w, map[string]interface{}{"success": true, "results": out})
 	}))
 
 	// Handler: get a profile picture URL
@@ -2169,26 +2182,26 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req ProfilePictureRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.JID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid jid"})
 			return
 		}
 		info, err := client.GetProfilePictureInfo(context.Background(), jid, &whatsmeow.GetProfilePictureParams{Preview: req.Preview})
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		if info == nil {
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "has_picture": false})
+			writeJSON(w, map[string]interface{}{"success": true, "has_picture": false})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, map[string]interface{}{
 			"success": true, "has_picture": true,
 			"url": info.URL, "id": info.ID, "type": info.Type,
 		})
@@ -2200,7 +2213,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req UserInfoRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jids := make([]types.JID, 0, len(req.JIDs))
@@ -2212,7 +2225,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		info, err := client.GetUserInfo(context.Background(), jids)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		out := make(map[string]interface{})
@@ -2223,7 +2236,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 				"is_business": ui.VerifiedName != nil,
 			}
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "users": out})
+		writeJSON(w, map[string]interface{}{"success": true, "users": out})
 	}))
 
 	// Handler: get group participants
@@ -2232,19 +2245,19 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req GroupActionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.GroupJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid group_jid"})
 			return
 		}
 		info, err := client.GetGroupInfo(context.Background(), jid)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		parts := make([]map[string]interface{}, 0, len(info.Participants))
@@ -2256,7 +2269,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 				"is_super_admin": p.IsSuperAdmin,
 			})
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, map[string]interface{}{
 			"success": true, "name": info.Name, "participant_count": len(parts), "participants": parts,
 		})
 	}))
@@ -2267,22 +2280,22 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req GroupActionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.GroupJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid group_jid"})
 			return
 		}
 		link, err := client.GetGroupInviteLink(context.Background(), jid, req.Reset)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "link": link})
+		writeJSON(w, map[string]interface{}{"success": true, "link": link})
 	}))
 
 	// Handler: join a group via invite link/code
@@ -2291,7 +2304,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req JoinGroupRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		code := req.Code
@@ -2301,10 +2314,10 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		jid, err := client.JoinGroupWithLink(context.Background(), code)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "group_jid": jid.String()})
+		writeJSON(w, map[string]interface{}{"success": true, "group_jid": jid.String()})
 	}))
 
 	// Handler: leave a group
@@ -2313,21 +2326,21 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req GroupActionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.GroupJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid group_jid"})
 			return
 		}
 		if err := client.LeaveGroup(context.Background(), jid); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "left group"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "left group"})
 	}))
 
 	// Handler: set group name
@@ -2336,21 +2349,21 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req SetGroupNameRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.GroupJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid group_jid"})
 			return
 		}
 		if err := client.SetGroupName(context.Background(), jid, req.Name); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group name updated"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "group name updated"})
 	}))
 
 	// Handler: set group topic/description
@@ -2359,21 +2372,21 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req SetGroupTopicRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.GroupJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid group_jid"})
 			return
 		}
 		if err := client.SetGroupTopic(context.Background(), jid, "", "", req.Topic); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group topic updated"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "group topic updated"})
 	}))
 
 	// Handler: block / unblock a contact
@@ -2382,13 +2395,13 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req BlockRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.JID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid jid"})
 			return
 		}
 		action := events.BlocklistChangeActionBlock
@@ -2398,15 +2411,15 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		ok, err := blockViaLID(client, jid, action)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		if !ok {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "blocklist update not reflected (verified via GetBlocklist)"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "blocklist update not reflected (verified via GetBlocklist)"})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": string(action) + "ed"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": string(action) + "ed"})
 	}))
 
 	// Handler: mute / unmute chat
@@ -2415,21 +2428,21 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req ChatStateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
 		if err := client.SendAppState(context.Background(), appstate.BuildMute(jid, req.Enable, time.Duration(req.Duration)*time.Hour)); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "mute updated"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "mute updated"})
 	}))
 
 	// Handler: pin / unpin chat
@@ -2438,21 +2451,21 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req ChatStateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
 		if err := client.SendAppState(context.Background(), appstate.BuildPin(jid, req.Enable)); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "pin updated"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "pin updated"})
 	}))
 
 	// Handler: archive / unarchive chat
@@ -2461,22 +2474,22 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req ChatStateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
 		key, ts := lastMsgKey(messageStore, jid)
 		if err := client.SendAppState(context.Background(), appstate.BuildArchive(jid, req.Enable, ts, key)); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "archive updated"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "archive updated"})
 	}))
 
 	// Handler: mark chat read / unread
@@ -2485,22 +2498,22 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req ChatStateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
 		key, ts := lastMsgKey(messageStore, jid)
 		if err := client.SendAppState(context.Background(), appstate.BuildMarkChatAsRead(jid, req.Enable, ts, key)); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "chat read-state updated"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "chat read-state updated"})
 	}))
 
 	// Handler: star / unstar a message
@@ -2509,13 +2522,13 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req StarRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
 		var senderRaw string
@@ -2536,10 +2549,10 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		}
 		if err := client.SendAppState(context.Background(), appstate.BuildStar(jid, senderJID, types.MessageID(req.MessageID), fromMe, req.Starred)); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "star updated"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "star updated"})
 	}))
 
 	// Handler: get chat settings (muted/pinned/archived)
@@ -2548,19 +2561,19 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req ChatStateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
 		s, err := client.Store.ChatSettings.GetChatSettings(context.Background(), jid)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		muted := false
@@ -2569,7 +2582,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			muted = s.MutedUntil.After(time.Now())
 			mutedUntil = s.MutedUntil.Format(time.RFC3339)
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, map[string]interface{}{
 			"success": true, "found": s.Found,
 			"muted": muted, "muted_until": mutedUntil,
 			"pinned": s.Pinned, "archived": s.Archived,
@@ -2582,13 +2595,13 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req HistoryRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
 		count := req.Count
@@ -2597,10 +2610,10 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		}
 		if err := requestMoreHistory(client, messageStore, jid, count); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "history requested (best-effort); si el telefono primario esta online y conserva mensajes anteriores, llegan async via history sync y quedan en la DB"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "history requested (best-effort); si el telefono primario esta online y conserva mensajes anteriores, llegan async via history sync y quedan en la DB"})
 	}))
 
 	// Handler: create group
@@ -2609,38 +2622,38 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req CreateGroupRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		name := strings.TrimSpace(req.Name)
 		if name == "" {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "group name required"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "group name required"})
 			return
 		}
 		if len([]rune(name)) > 25 {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "group name max 25 chars"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "group name max 25 chars"})
 			return
 		}
 		parts, err := parseParticipantJIDs(req.Participants)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		if len(parts) == 0 {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "at least one participant required"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "at least one participant required"})
 			return
 		}
 		info, err := client.CreateGroup(context.Background(), whatsmeow.ReqCreateGroup{Name: name, Participants: parts})
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, map[string]interface{}{
 			"success": true, "group_jid": info.JID.String(),
 			"name": info.Name, "participant_count": len(info.Participants),
 		})
@@ -2652,13 +2665,13 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req UpdateParticipantsRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		gjid, err := types.ParseJID(req.GroupJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid group_jid"})
 			return
 		}
 		var action whatsmeow.ParticipantChange
@@ -2673,24 +2686,24 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			action = whatsmeow.ParticipantChangeDemote
 		default:
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "action must be add/remove/promote/demote"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "action must be add/remove/promote/demote"})
 			return
 		}
 		parts, err := parseParticipantJIDs(req.Participants)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		if len(parts) == 0 {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "at least one participant required"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "at least one participant required"})
 			return
 		}
 		result, err := client.UpdateGroupParticipants(context.Background(), gjid, parts, action)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		results := make([]map[string]interface{}, 0, len(result))
@@ -2700,7 +2713,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 				"is_admin": p.IsAdmin,
 			})
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "action": req.Action, "results": results})
+		writeJSON(w, map[string]interface{}{"success": true, "action": req.Action, "results": results})
 	}))
 
 	// Handler: set disappearing-messages timer (off/24h/7d/90d)
@@ -2709,27 +2722,27 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req DisappearingRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
 		timer, ok := whatsmeow.ParseDisappearingTimerString(req.Duration)
 		if !ok {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "duration must be one of: off, 24h, 7d, 90d"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "duration must be one of: off, 24h, 7d, 90d"})
 			return
 		}
 		if err := client.SetDisappearingTimer(context.Background(), jid, timer, time.Time{}); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "disappearing timer set", "duration": req.Duration})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "disappearing timer set", "duration": req.Duration})
 	}))
 
 	// Handler: estado de conexion/sesion/ban del cliente
@@ -2737,7 +2750,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		w.Header().Set("Content-Type", "application/json")
 		m := status.snapshot(client)
 		m["success"] = true
-		json.NewEncoder(w).Encode(m)
+		writeJSON(w, m)
 	}))
 
 	// --- Lote A1: perfil & cuenta ---
@@ -2748,15 +2761,15 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req SetStatusRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		if err := client.SetStatusMessage(context.Background(), req.Message); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "status updated"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "status updated"})
 	}))
 
 	// Handler: get business profile de un contacto
@@ -2765,35 +2778,35 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req BusinessProfileRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.JID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid jid"})
 			return
 		}
 		bp, err := client.GetBusinessProfile(context.Background(), jid)
 		if err != nil {
 			// Contacto NO business: whatsmeow devuelve "missing jid"/not-found. No es error real.
 			if strings.Contains(err.Error(), "missing jid") || strings.Contains(err.Error(), "not found") {
-				json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "is_business": false})
+				writeJSON(w, map[string]interface{}{"success": true, "is_business": false})
 				return
 			}
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		if bp == nil {
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "is_business": false})
+			writeJSON(w, map[string]interface{}{"success": true, "is_business": false})
 			return
 		}
 		cats := make([]map[string]string, 0, len(bp.Categories))
 		for _, c := range bp.Categories {
 			cats = append(cats, map[string]string{"id": c.ID, "name": c.Name})
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, map[string]interface{}{
 			"success": true, "is_business": true, "jid": bp.JID.String(),
 			"address": bp.Address, "email": bp.Email, "categories": cats,
 			"business_hours_timezone": bp.BusinessHoursTimeZone,
@@ -2806,26 +2819,26 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req UserDevicesRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jids, err := parseParticipantJIDs(req.JIDs)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		devices, err := client.GetUserDevices(context.Background(), jids)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		out := make([]string, 0, len(devices))
 		for _, d := range devices {
 			out = append(out, d.String())
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "devices": out, "count": len(out)})
+		writeJSON(w, map[string]interface{}{"success": true, "devices": out, "count": len(out)})
 	}))
 
 	// Handler: set default disappearing timer (aplica a chats NUEVOS)
@@ -2834,21 +2847,21 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req DefaultDisappearingRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		timer, ok := whatsmeow.ParseDisappearingTimerString(req.Duration)
 		if !ok {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "duration must be one of: off, 24h, 7d, 90d"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "duration must be one of: off, 24h, 7d, 90d"})
 			return
 		}
 		if err := client.SetDefaultDisappearingTimer(context.Background(), timer); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "default disappearing timer set", "duration": req.Duration})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "default disappearing timer set", "duration": req.Duration})
 	}))
 
 	// --- Lote A2: administración de grupos (requieren ser admin) ---
@@ -2859,21 +2872,21 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req SetGroupDescriptionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.GroupJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid group_jid"})
 			return
 		}
 		if err := client.SetGroupDescription(context.Background(), jid, req.Description); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group description updated"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "group description updated"})
 	}))
 
 	// Handler: set group announce (true = solo admins pueden enviar mensajes)
@@ -2882,21 +2895,21 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req GroupToggleRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.GroupJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid group_jid"})
 			return
 		}
 		if err := client.SetGroupAnnounce(context.Background(), jid, req.Enable); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group announce updated"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "group announce updated"})
 	}))
 
 	// Handler: set group locked (true = solo admins pueden editar info del grupo)
@@ -2905,21 +2918,21 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req GroupToggleRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.GroupJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid group_jid"})
 			return
 		}
 		if err := client.SetGroupLocked(context.Background(), jid, req.Enable); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group locked updated"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "group locked updated"})
 	}))
 
 	// Handler: set group photo (lee la imagen del path; WhatsApp requiere JPEG)
@@ -2928,28 +2941,28 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req SetGroupPhotoRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.GroupJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid group_jid"})
 			return
 		}
 		avatar, err := os.ReadFile(req.ImagePath)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": fmt.Sprintf("cannot read image: %v", err)})
+			writeJSON(w, map[string]interface{}{"success": false, "message": fmt.Sprintf("cannot read image: %v", err)})
 			return
 		}
 		pictureID, err := client.SetGroupPhoto(context.Background(), jid, avatar)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "group photo updated", "picture_id": pictureID})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "group photo updated", "picture_id": pictureID})
 	}))
 
 	// --- Lote B2: presencia ---
@@ -2961,7 +2974,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req SetPresenceRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		var p types.Presence
@@ -2972,15 +2985,15 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			p = types.PresenceUnavailable
 		default:
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "state must be available/unavailable"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "state must be available/unavailable"})
 			return
 		}
 		if err := client.SendPresence(context.Background(), p); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "presence sent", "state": req.State})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "presence sent", "state": req.State})
 	}))
 
 	// Handler: subscribe to a contact's presence (necesario para recibir su online/last-seen)
@@ -2989,21 +3002,21 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req BusinessProfileRequest // {jid}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.JID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid jid"})
 			return
 		}
 		if err := client.SubscribePresence(context.Background(), jid); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "subscribed to presence"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "subscribed to presence"})
 	}))
 
 	// Handler: get last known presence of a contact (del tracker en memoria)
@@ -3012,18 +3025,18 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req BusinessProfileRequest // {jid}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.JID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid jid"})
 			return
 		}
 		info, ok := presences.get(canonicalPresenceKey(client, jid))
 		if !ok {
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "tracked": false, "message": "sin datos de presencia aún (subscribe_presence + esperar a que cambie de estado)"})
+			writeJSON(w, map[string]interface{}{"success": true, "tracked": false, "message": "sin datos de presencia aún (subscribe_presence + esperar a que cambie de estado)"})
 			return
 		}
 		out := map[string]interface{}{
@@ -3034,7 +3047,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		if !info.LastSeen.IsZero() {
 			out["last_seen"] = info.LastSeen.Format(time.RFC3339)
 		}
-		json.NewEncoder(w).Encode(out)
+		writeJSON(w, out)
 	}))
 
 	// --- Lote B1: unirse por código de invitación ---
@@ -3045,22 +3058,22 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req InviteActionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		gjid, inviter, code, exp, err := loadGroupInvite(messageStore, req.ChatJID, req.InviteMessageID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		info, err := client.GetGroupInfoFromInvite(context.Background(), gjid, inviter, code, exp)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		writeJSON(w, map[string]interface{}{
 			"success": true, "group_jid": info.JID.String(),
 			"name": info.Name, "participant_count": len(info.Participants),
 		})
@@ -3072,21 +3085,21 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req InviteActionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		gjid, inviter, code, exp, err := loadGroupInvite(messageStore, req.ChatJID, req.InviteMessageID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		if err := client.JoinGroupWithInvite(context.Background(), gjid, inviter, code, exp); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "joined group via invite", "group_jid": gjid.String()})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "joined group via invite", "group_jid": gjid.String()})
 	}))
 
 	// --- Lote A3: solicitudes de ingreso a grupos (requieren admin) ---
@@ -3097,21 +3110,21 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req GroupToggleRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.GroupJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid group_jid"})
 			return
 		}
 		if err := client.SetGroupJoinApprovalMode(context.Background(), jid, req.Enable); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "join approval mode updated"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "join approval mode updated"})
 	}))
 
 	// Handler: get group join requests (solicitudes pendientes de ingreso)
@@ -3120,26 +3133,26 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req GroupActionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.GroupJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid group_jid"})
 			return
 		}
 		reqs, err := client.GetGroupRequestParticipants(context.Background(), jid)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		out := make([]map[string]interface{}, 0, len(reqs))
 		for _, p := range reqs {
 			out = append(out, map[string]interface{}{"jid": p.JID.String(), "requested_at": p.RequestedAt.Format(time.RFC3339)})
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "requests": out, "count": len(out)})
+		writeJSON(w, map[string]interface{}{"success": true, "requests": out, "count": len(out)})
 	}))
 
 	// Handler: review group join request (approve/reject)
@@ -3148,13 +3161,13 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req UpdateParticipantsRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.GroupJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid group_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid group_jid"})
 			return
 		}
 		var action whatsmeow.ParticipantRequestChange
@@ -3165,31 +3178,31 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			action = whatsmeow.ParticipantChangeReject
 		default:
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "action must be approve/reject"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "action must be approve/reject"})
 			return
 		}
 		parts, err := parseParticipantJIDs(req.Participants)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		if len(parts) == 0 {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "at least one participant required"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "at least one participant required"})
 			return
 		}
 		result, err := client.UpdateGroupRequestParticipants(context.Background(), jid, parts, action)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		results := make([]map[string]interface{}, 0, len(result))
 		for _, p := range result {
 			results = append(results, map[string]interface{}{"jid": p.JID.String(), "error_code": p.Error})
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "action": req.Action, "results": results})
+		writeJSON(w, map[string]interface{}{"success": true, "action": req.Action, "results": results})
 	}))
 
 	// --- Lote A4: votar en encuestas ---
@@ -3200,18 +3213,18 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var req PollVoteRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid request"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
 		jid, err := types.ParseJID(req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "invalid chat_jid"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
 		if len(req.Options) == 0 {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "at least one option required"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "at least one option required"})
 			return
 		}
 		// Reconstruir el MessageInfo del poll original desde la DB (debe haber sido capturado).
@@ -3223,7 +3236,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		).Scan(&senderRaw, &fromMe)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "poll not found in DB (no fue capturado); no se puede votar"})
+			writeJSON(w, map[string]interface{}{"success": false, "message": "poll not found in DB (no fue capturado); no se puede votar"})
 			return
 		}
 		senderJID := jid
@@ -3245,15 +3258,15 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		voteMsg, err := client.BuildPollVote(context.Background(), pollInfo, req.Options)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		if _, err := client.SendMessage(context.Background(), jid, voteMsg); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "poll vote sent", "options": req.Options})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "poll vote sent", "options": req.Options})
 	}))
 
 	// --- Logout: desvincula la sesión (requiere re-escanear QR para volver) ---
@@ -3261,11 +3274,11 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		w.Header().Set("Content-Type", "application/json")
 		if err := client.Logout(context.Background()); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
 		}
 		status.onLoggedOut("logout solicitado por el usuario")
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "logged out; reiniciar el bridge y re-escanear el QR para volver a vincular"})
+		writeJSON(w, map[string]interface{}{"success": true, "message": "logged out; reiniciar el bridge y re-escanear el QR para volver a vincular"})
 	}))
 
 	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).
@@ -3338,7 +3351,7 @@ func main() {
 		logger.Errorf("Failed to initialize message store: %v", err)
 		return
 	}
-	defer messageStore.Close()
+	defer func() { _ = messageStore.Close() }()
 
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
@@ -3399,7 +3412,7 @@ func main() {
 
 		case *events.ChatPresence:
 			// Typing de terceros (composing/paused) en un chat.
-			presences.onChatPresence(canonicalPresenceKey(client, v.MessageSource.Sender), v.State == types.ChatPresenceComposing)
+			presences.onChatPresence(canonicalPresenceKey(client, v.Sender), v.State == types.ChatPresenceComposing)
 
 		case *events.CallOffer:
 			// Llamada entrante: solo se registra (whatsmeow no maneja audio). Sin auto-rechazo.
@@ -3504,17 +3517,17 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 			var displayName, convName *string
 			// Try to extract the fields we care about regardless of the exact type
 			v := reflect.ValueOf(conversation)
-			if v.Kind() == reflect.Ptr && !v.IsNil() {
+			if v.Kind() == reflect.Pointer && !v.IsNil() {
 				v = v.Elem()
 
 				// Try to find DisplayName field
-				if displayNameField := v.FieldByName("DisplayName"); displayNameField.IsValid() && displayNameField.Kind() == reflect.Ptr && !displayNameField.IsNil() {
+				if displayNameField := v.FieldByName("DisplayName"); displayNameField.IsValid() && displayNameField.Kind() == reflect.Pointer && !displayNameField.IsNil() {
 					dn := displayNameField.Elem().String()
 					displayName = &dn
 				}
 
 				// Try to find Name field
-				if nameField := v.FieldByName("Name"); nameField.IsValid() && nameField.Kind() == reflect.Ptr && !nameField.IsNil() {
+				if nameField := v.FieldByName("Name"); nameField.IsValid() && nameField.Kind() == reflect.Pointer && !nameField.IsNil() {
 					n := nameField.Elem().String()
 					convName = &n
 				}
@@ -3572,6 +3585,9 @@ func handlePollVote(client *whatsmeow.Client, store *MessageStore, evt *events.M
 		logger.Warnf("poll vote: no se pudo descifrar: %v", err)
 		return
 	}
+	if store == nil {
+		return
+	}
 	pollID := evt.Message.GetPollUpdateMessage().GetPollCreationMessageKey().GetID()
 	var optsJSON string
 	_ = store.db.QueryRow("SELECT filename FROM messages WHERE id = ? AND media_type = 'poll' LIMIT 1", pollID).Scan(&optsJSON)
@@ -3598,13 +3614,11 @@ func handlePollVote(client *whatsmeow.Client, store *MessageStore, evt *events.M
 	logger.Infof("🗳️ Voto de %s en poll %s: %s", evt.Info.Sender.String(), pollID, label)
 
 	// Persistir para que sea consultable via list_messages (TouchChat asegura el FK del chat).
-	if store != nil {
-		_ = store.TouchChat(evt.Info.Chat.String(), evt.Info.Timestamp)
-		if err := store.StoreMessage(evt.Info.ID, evt.Info.Chat.String(), evt.Info.Sender.User,
-			"🗳️ votó: "+label, evt.Info.Timestamp, evt.Info.IsFromMe,
-			"poll_vote", "", "", "", nil, nil, nil, 0); err != nil {
-			logger.Warnf("poll vote: no se pudo persistir: %v", err)
-		}
+	_ = store.TouchChat(evt.Info.Chat.String(), evt.Info.Timestamp)
+	if err := store.StoreMessage(evt.Info.ID, evt.Info.Chat.String(), evt.Info.Sender.User,
+		"🗳️ votó: "+label, evt.Info.Timestamp, evt.Info.IsFromMe,
+		"poll_vote", "", "", "", nil, nil, nil, 0); err != nil {
+		logger.Warnf("poll vote: no se pudo persistir: %v", err)
 	}
 }
 
@@ -3663,12 +3677,11 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 			}
 
 			// Get timestamp from message info
-			timestamp := time.Time{}
-			if ts := latestMsg.Message.GetMessageTimestamp(); ts != 0 {
-				timestamp = time.Unix(int64(ts), 0)
-			} else {
+			ts := latestMsg.Message.GetMessageTimestamp()
+			if ts == 0 {
 				continue
 			}
+			timestamp := time.Unix(int64(ts), 0)
 
 			// Batch: una transaccion por conversacion -> 1 fsync en vez de N (WAL +
 			// synchronous=NORMAL). Se abre DESPUES de GetChatName (la unica lectura de esta
@@ -3741,12 +3754,11 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 				}
 
 				// Get message timestamp
-				timestamp := time.Time{}
-				if ts := msg.Message.GetMessageTimestamp(); ts != 0 {
-					timestamp = time.Unix(int64(ts), 0)
-				} else {
+				ts := msg.Message.GetMessageTimestamp()
+				if ts == 0 {
 					continue
 				}
+				timestamp := time.Unix(int64(ts), 0)
 
 				err = storeMessageExec(
 					tx,
@@ -3781,7 +3793,7 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 			}
 			if err := tx.Commit(); err != nil {
 				logger.Warnf("history sync: commit fallo (%s): %v", chatJID, err)
-				tx.Rollback()
+				_ = tx.Rollback()
 			}
 		}
 	}
