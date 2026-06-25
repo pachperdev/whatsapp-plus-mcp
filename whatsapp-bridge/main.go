@@ -51,12 +51,12 @@ type Message struct {
 	Filename  string
 }
 
-// Database handler for storing message history
+// MessageStore is the SQLite-backed handler for storing message history.
 type MessageStore struct {
 	db *sql.DB
 }
 
-// Initialize message store
+// NewMessageStore initializes the message store, opening/creating the SQLite DB.
 func NewMessageStore() (*MessageStore, error) {
 	// Create directory for database if it doesn't exist
 	if err := os.MkdirAll("store", 0755); err != nil {
@@ -165,7 +165,7 @@ func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time
 	return storeChatExec(store.db, jid, name, lastMessageTime)
 }
 
-// Touch a chat: create it if missing (with empty name) or just bump its
+// TouchChat creates the chat if missing (with empty name) or just bumps its
 // last_message_time, preserving the existing name. Used for outgoing messages
 // where we don't resolve a display name.
 func (store *MessageStore) TouchChat(jid string, lastMessageTime time.Time) error {
@@ -282,7 +282,7 @@ func (store *MessageStore) GetUnreadChats() ([]UnreadChat, error) {
 	return out, rows.Err()
 }
 
-// Get messages from a chat
+// GetMessages returns the most recent messages from a chat.
 func (store *MessageStore) GetMessages(chatJID string, limit int) ([]Message, error) {
 	rows, err := store.db.Query(
 		"SELECT sender, content, timestamp, is_from_me, media_type, filename FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT ?",
@@ -308,7 +308,7 @@ func (store *MessageStore) GetMessages(chatJID string, limit int) ([]Message, er
 	return messages, nil
 }
 
-// Get all chats
+// GetChats returns all chats keyed by JID with their last-message time.
 func (store *MessageStore) GetChats() (map[string]time.Time, error) {
 	rows, err := store.db.Query("SELECT jid, last_message_time FROM chats ORDER BY last_message_time DESC")
 	if err != nil {
@@ -1435,7 +1435,7 @@ type DownloadMediaResponse struct {
 	Path     string `json:"path,omitempty"`
 }
 
-// Store additional media info in the database
+// StoreMediaInfo stores additional media info for a message in the database.
 func (store *MessageStore) StoreMediaInfo(id, chatJID, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
 	_, err := store.db.Exec(
 		"UPDATE messages SET url = ?, media_key = ?, file_sha256 = ?, file_enc_sha256 = ?, file_length = ? WHERE id = ? AND chat_jid = ?",
@@ -1444,7 +1444,7 @@ func (store *MessageStore) StoreMediaInfo(id, chatJID, url string, mediaKey, fil
 	return err
 }
 
-// Get media info from the database
+// GetMediaInfo returns the stored media info for a message from the database.
 func (store *MessageStore) GetMediaInfo(id, chatJID string) (string, string, string, string, []byte, []byte, []byte, uint64, error) {
 	var mediaType, filename, url, directPath string
 	var mediaKey, fileSHA256, fileEncSHA256 []byte
