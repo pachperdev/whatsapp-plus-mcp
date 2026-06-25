@@ -70,6 +70,11 @@ class Message:
     chat_name: Optional[str] = None
     media_type: Optional[str] = None
 
+    def __post_init__(self):
+        # SQLite guarda los booleanos como 0/1 (int). mcp >=1.10 valida el structured output
+        # contra el schema y rechaza un int donde se espera bool -> normalizar a bool.
+        self.is_from_me = bool(self.is_from_me)
+
 @dataclass
 class Chat:
     jid: str
@@ -78,6 +83,11 @@ class Chat:
     last_message: Optional[str] = None
     last_sender: Optional[str] = None
     last_is_from_me: Optional[bool] = None
+
+    def __post_init__(self):
+        # Igual que Message: normaliza el 0/1 de SQLite a bool, preservando None (campo opcional).
+        if self.last_is_from_me is not None:
+            self.last_is_from_me = bool(self.last_is_from_me)
 
     @property
     def is_group(self) -> bool:
@@ -238,6 +248,7 @@ def get_sender_name(sender_jid: str) -> str:
     if name:
         return name
     # 2) Fallback: nombre guardado en la tabla chats de messages.db
+    conn = None
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
@@ -254,10 +265,10 @@ def get_sender_name(sender_jid: str) -> str:
         logger.error(f"Database error while getting sender name: {e}")
         return sender_jid
     finally:
-        if 'conn' in locals():
+        if conn is not None:
             conn.close()
 
-def format_message(message: Message, show_chat_info: bool = True) -> None:
+def format_message(message: Message, show_chat_info: bool = True) -> str:
     """Print a single message with consistent formatting."""
     output = ""
     
@@ -277,7 +288,7 @@ def format_message(message: Message, show_chat_info: bool = True) -> None:
         logger.error(f"Error formatting message: {e}")
     return output
 
-def format_messages_list(messages: List[Message], show_chat_info: bool = True) -> None:
+def format_messages_list(messages: List[Message], show_chat_info: bool = True) -> str:
     output = ""
     if not messages:
         output += "No messages to display."
@@ -321,10 +332,11 @@ def list_messages(
     context_after: int = 1
 ) -> List[Dict[str, Any]]:
     """Get messages matching the specified criteria with optional context."""
+    conn = None
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
-        
+
         # Build base query
         query_parts = ["SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type FROM messages"]
         query_parts.append("JOIN chats ON messages.chat_jid = chats.jid")
@@ -334,21 +346,21 @@ def list_messages(
         # Add filters
         if after:
             try:
-                after = datetime.fromisoformat(after)
+                after_dt = datetime.fromisoformat(after)
             except ValueError:
                 raise ValueError(f"Invalid date format for 'after': {after}. Please use ISO-8601 format.")
-            
+
             where_clauses.append("messages.timestamp > ?")
-            params.append(after)
+            params.append(after_dt)
 
         if before:
             try:
-                before = datetime.fromisoformat(before)
+                before_dt = datetime.fromisoformat(before)
             except ValueError:
                 raise ValueError(f"Invalid date format for 'before': {before}. Please use ISO-8601 format.")
-            
+
             where_clauses.append("messages.timestamp < ?")
-            params.append(before)
+            params.append(before_dt)
 
         if sender_phone_number:
             where_clauses.append("messages.sender = ?")
@@ -414,7 +426,7 @@ def list_messages(
         logger.error(f"Database error: {e}")
         return []
     finally:
-        if 'conn' in locals():
+        if conn is not None:
             conn.close()
 
 
@@ -424,10 +436,11 @@ def get_message_context(
     after: int = 5
 ) -> MessageContext:
     """Get context around a specific message."""
+    conn = None
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
-        
+
         # Get the target message first
         cursor.execute("""
             SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type
@@ -507,7 +520,7 @@ def get_message_context(
         logger.error(f"Database error: {e}")
         raise
     finally:
-        if 'conn' in locals():
+        if conn is not None:
             conn.close()
 
 
@@ -519,6 +532,7 @@ def list_chats(
     sort_by: str = "last_active"
 ) -> List[Chat]:
     """Get chats matching the specified criteria."""
+    conn = None
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
@@ -591,7 +605,7 @@ def list_chats(
         logger.error(f"Database error: {e}")
         return []
     finally:
-        if 'conn' in locals():
+        if conn is not None:
             conn.close()
 
 
@@ -669,10 +683,11 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
         limit: Maximum number of chats to return (default 20)
         page: Page number for pagination (default 0)
     """
+    conn = None
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
-        
+
         cursor.execute("""
             SELECT DISTINCT
                 c.jid,
@@ -709,12 +724,13 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
         logger.error(f"Database error: {e}")
         return []
     finally:
-        if 'conn' in locals():
+        if conn is not None:
             conn.close()
 
 
-def get_last_interaction(jid: str) -> str:
+def get_last_interaction(jid: str) -> Optional[str]:
     """Get most recent message involving the contact."""
+    conn = None
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
@@ -758,12 +774,13 @@ def get_last_interaction(jid: str) -> str:
         logger.error(f"Database error: {e}")
         return None
     finally:
-        if 'conn' in locals():
+        if conn is not None:
             conn.close()
 
 
 def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]:
     """Get chat metadata by JID."""
+    conn = None
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
@@ -808,7 +825,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
         logger.error(f"Database error: {e}")
         return None
     finally:
-        if 'conn' in locals():
+        if conn is not None:
             conn.close()
 
 
@@ -824,6 +841,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
     for lid, mapped_pn in lid_to_pn.items():
         if mapped_pn == pn:
             candidate_jids.append(f"{lid}@lid")
+    conn = None
     try:
         conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
         cursor = conn.cursor()
@@ -862,17 +880,18 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
         logger.error(f"Database error: {e}")
         return None
     finally:
-        if 'conn' in locals():
+        if conn is not None:
             conn.close()
 
 def send_message(recipient: str, message: str, reply_to: str = "", mentions: Optional[List[str]] = None) -> Tuple[bool, str]:
+    response = None
     try:
         # Validate input
         if not recipient:
             return False, "Recipient must be provided"
 
         url = f"{WHATSAPP_API_BASE_URL}/send"
-        payload = {
+        payload: Dict[str, Any] = {
             "recipient": recipient,
             "message": message,
         }
@@ -893,16 +912,17 @@ def send_message(recipient: str, message: str, reply_to: str = "", mentions: Opt
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
     except json.JSONDecodeError:
-        return False, f"Error parsing response: {response.text}"
+        return False, f"Error parsing response: {response.text if response is not None else ''}"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
 def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
+    response = None
     try:
         # Validate input
         if not recipient:
             return False, "Recipient must be provided"
-        
+
         if not media_path:
             return False, "Media path must be provided"
         
@@ -927,12 +947,13 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
     except json.JSONDecodeError:
-        return False, f"Error parsing response: {response.text}"
+        return False, f"Error parsing response: {response.text if response is not None else ''}"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
 def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
     temp_to_cleanup = None
+    response = None
     try:
         # Validate input
         if not recipient:
@@ -969,7 +990,7 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
     except json.JSONDecodeError:
-        return False, f"Error parsing response: {response.text}"
+        return False, f"Error parsing response: {response.text if response is not None else ''}"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
     finally:
@@ -990,6 +1011,7 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
     Returns:
         The local file path if download was successful, None otherwise
     """
+    response = None
     try:
         url = f"{WHATSAPP_API_BASE_URL}/download"
         payload = {
@@ -1016,7 +1038,7 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
         logger.error(f"Request error: {str(e)}")
         return None
     except json.JSONDecodeError:
-        logger.error(f"Error parsing response: {response.text}")
+        logger.error(f"Error parsing response: {response.text if response is not None else ''}")
         return None
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")

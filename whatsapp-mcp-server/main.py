@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
+from whatsapp import Contact, Chat, MessageContext
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
     list_messages as whatsapp_list_messages,
@@ -69,7 +70,7 @@ from whatsapp import (
 mcp = FastMCP("whatsapp")
 
 @mcp.tool()
-def search_contacts(query: str) -> List[Dict[str, Any]]:
+def search_contacts(query: str) -> List[Contact]:
     """Search WhatsApp contacts by name or phone number.
     
     Args:
@@ -135,7 +136,7 @@ def list_chats(
     page: int = 0,
     include_last_message: bool = True,
     sort_by: str = "last_active"
-) -> List[Dict[str, Any]]:
+) -> List[Chat]:
     """Get WhatsApp chats matching specified criteria.
     
     Args:
@@ -155,7 +156,7 @@ def list_chats(
     return chats
 
 @mcp.tool()
-def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]:
+def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]:
     """Get WhatsApp chat metadata by JID.
     
     Args:
@@ -166,7 +167,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]
     return chat
 
 @mcp.tool()
-def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
+def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
     """Get WhatsApp chat metadata by sender phone number.
     
     Args:
@@ -176,7 +177,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
     return chat
 
 @mcp.tool()
-def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str, Any]]:
+def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
     """Get all WhatsApp chats involving the contact.
     
     Args:
@@ -188,7 +189,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str
     return chats
 
 @mcp.tool()
-def get_last_interaction(jid: str) -> str:
+def get_last_interaction(jid: str) -> Optional[str]:
     """Get most recent WhatsApp message involving the contact.
     
     Args:
@@ -202,7 +203,7 @@ def get_message_context(
     message_id: str,
     before: int = 5,
     after: int = 5
-) -> Dict[str, Any]:
+) -> MessageContext:
     """Get context around a specific WhatsApp message.
     
     Args:
@@ -396,7 +397,7 @@ def send_poll(chat_jid: str, question: str, options: List[str], selectable_count
     return {"success": success, "message": status_message}
 
 @mcp.tool()
-def list_all_contacts(limit: int = 0) -> List[Dict[str, Any]]:
+def list_all_contacts(limit: int = 0) -> List[Contact]:
     """List all contacts from your WhatsApp address book (unified by number, sorted by name).
 
     Args:
