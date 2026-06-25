@@ -11,6 +11,10 @@ whatsapp-bridge/whatsapp-bridge
 # Config MCP local (rutas absolutas de la máquina, no portable)
 .mcp.json
 
+# Guía de trabajo INTERNA (roadmap/log de desarrollo). No es documentación pública
+# ni va al repo de publicación; se mantiene solo en local.
+AUDIT.md
+
 # Datos de runtime del bridge: DBs (mensajes/sesión), token, y MEDIA descargada
 # (fotos/audios/videos/documentos/stickers privados). NADA de store/ debe versionarse.
 whatsapp-bridge/store/

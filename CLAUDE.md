@@ -10,7 +10,7 @@ A Model Context Protocol (MCP) server for a **personal WhatsApp account**, built
 
 2. **Python MCP Server** (`whatsapp-mcp-server/`): exposes WhatsApp functionality as MCP tools. **Reads** come straight from the SQLite DB; **writes/actions** go to the Go bridge over HTTP.
 
-> **This fork is far ahead of upstream.** It exposes **62 MCP tools** (upstream had ~12). `AUDIT.md` is the authoritative log of project state, roadmap, and per-feature implementation notes — **read it before planning any feature work.** Commits, comments, and `AUDIT.md` are written in Spanish.
+> **This fork is far ahead of upstream.** It exposes **62 MCP tools** (upstream had ~12). See `CHANGELOG.md` for the milestone history. Commits and code comments are written in Spanish.
 
 ## Architecture
 
@@ -25,7 +25,7 @@ Every action-style tool is three small pieces, all following the same shape:
 2. **Client function** in `whatsapp.py`: a thin wrapper, almost always `_bridge_post("<name>", payload)`.
 3. **MCP tool** in `main.py`: `@mcp.tool()` that calls the `whatsapp.py` function.
 
-Event-driven features (incoming edits, votes, presence, ban status) instead add a `case` to the bridge's event handler and persist to SQLite. `Build*`-based sends (`BuildEdit`, `BuildRevoke`, `BuildPollCreation`, `BuildPollVote`) all go out via `SendMessage`. See `AUDIT.md` → "Referencia rápida" for the whatsmeow method map.
+Event-driven features (incoming edits, votes, presence, ban status) instead add a `case` to the bridge's event handler and persist to SQLite. `Build*`-based sends (`BuildEdit`, `BuildRevoke`, `BuildPollCreation`, `BuildPollVote`) all go out via `SendMessage`. For available whatsmeow methods, see the [whatsmeow docs](https://pkg.go.dev/go.mau.fi/whatsmeow) or the existing handlers in `main.go` as templates.
 
 ### Security model (important — not optional)
 - The bridge binds **loopback only** (`127.0.0.1:8080`), never `0.0.0.0`.
@@ -84,9 +84,9 @@ Full list and signatures live in `whatsapp-mcp-server/main.py` (`@mcp.tool()` de
 ## Authentication & ban awareness
 - First bridge run requires a QR scan; session persists in `store/whatsapp.db`. Re-auth may be needed after ~20 days. The bridge logs the raw QR (`QR_RAW`) so it can be rendered to a PNG and opened when the terminal can't show it.
 - The bridge handles `events.TemporaryBan` / `ConnectFailure` / `LoggedOut` / `Connected` / `Disconnected`, keeps thread-safe `botStatus`, and **pauses outgoing sends while temp-banned**.
-- **whatsmeow is an unofficial client; using it violates WhatsApp's ToS and risks the number.** Per `AUDIT.md`: reactive use (replying to inbound) is low-risk; proactive/cold/bulk outreach is high-risk. Hard rules: no bulk or repeated-identical messages (triggers ban code 104), one account = one session = one IP, keep whatsmeow current. Read the ban section of `AUDIT.md` before adding anything that sends proactively.
+- **whatsmeow is an unofficial client; using it violates WhatsApp's ToS and risks the number.** Reactive use (replying to inbound) is low-risk; proactive / cold / bulk outreach is high-risk. Hard rules: no bulk or repeated-identical messages (triggers ban code 104), one account = one session = one IP, keep whatsmeow current. Be especially careful before adding anything that sends proactively.
 
 ## Configuration
 - `.mcp.json` registers the server (runs `uv --directory <repo>/whatsapp-mcp-server run main.py`).
 - `whatsapp-bridge/go.mod`: Go 1.25, whatsmeow (pinned, ~2026-06), `modernc.org/sqlite`.
-- Roadmap status: Phases 1–3 + Tier A/B + Tier 3 are complete; **Phase 4 (Pydantic structured output, MCP SDK 1.6→1.28 upgrade, resources/prompts, tests + CI + linters) is the only open work** — see `AUDIT.md`.
+- Roadmap status: Phases 1–3 + Tier A/B + Tier 3 are complete; **Phase 4 (Pydantic structured output, MCP SDK 1.6→1.28 upgrade, resources/prompts, tests + CI + linters) is the only open work.** See `CHANGELOG.md` for the milestone history.
