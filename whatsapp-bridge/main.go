@@ -2881,7 +2881,11 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid group_jid"})
 			return
 		}
-		if err := client.SetGroupDescription(context.Background(), jid, req.Description); err != nil {
+		// whatsmeow.SetGroupDescription envía el nodo sin versionar el cambio y el server
+		// responde 409 conflict. En WhatsApp el "topic" ES la descripción del grupo, y
+		// SetGroupTopic (con previous/new id vacíos) sí maneja el versionado, igual que el
+		// handler set_group_topic. Por eso reusamos SetGroupTopic aquí.
+		if err := client.SetGroupTopic(context.Background(), jid, "", "", req.Description); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
 			return
