@@ -397,13 +397,15 @@ def send_poll(chat_jid: str, question: str, options: List[str], selectable_count
     return {"success": success, "message": status_message}
 
 @mcp.tool()
-def list_all_contacts(limit: int = 0) -> List[Contact]:
+def list_all_contacts(limit: int = 0, saved_only: bool = False) -> List[Contact]:
     """List all contacts from your WhatsApp address book (unified by number, sorted by name).
 
     Args:
         limit: Max contacts to return (0 = all). The address book can be large; set a limit if you only need a sample.
+        saved_only: If True, return only contacts truly saved in your address book (a name you
+            assigned), excluding people captured solely by their push name from chatting with you.
     """
-    return whatsapp_list_all_contacts(limit)
+    return whatsapp_list_all_contacts(limit, saved_only)
 
 @mcp.tool()
 def check_whatsapp(phones: List[str]) -> List[Dict[str, Any]]:

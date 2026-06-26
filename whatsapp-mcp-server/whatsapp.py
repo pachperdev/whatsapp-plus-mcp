@@ -117,12 +117,17 @@ def _normalize_phone(jid_or_local: str) -> str:
 def _load_contact_index():
     """Carga indices de nombres desde la libreta de whatsmeow (whatsapp.db).
 
-    Devuelve (names, lid_to_pn):
+    Devuelve (names, lid_to_pn, saved):
       names:     { numero_telefono: mejor_nombre_para_mostrar }
       lid_to_pn: { lid: numero_telefono }
+      saved:     { numero_telefono } cuyo nombre viene de la AGENDA del usuario
+                 (first_name/full_name), no solo del push name que la otra
+                 persona eligio. Sirve para distinguir contactos realmente
+                 guardados de simples conocidos capturados al chatear.
     """
     names = {}
     lid_to_pn = {}
+    saved = set()
     try:
         conn = sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True)
         cursor = conn.cursor()
@@ -135,6 +140,10 @@ def _load_contact_index():
                 name = (full_name or first_name or push_name or business_name or "").strip()
                 if pn and name:
                     names[pn] = name
+                # Guardado = tiene nombre de agenda (lo asignaste tu via app-state),
+                # a diferencia de quien solo tiene push_name/business_name.
+                if pn and ((full_name or "").strip() or (first_name or "").strip()):
+                    saved.add(pn)
         except sqlite3.Error:
             pass
         try:
@@ -145,7 +154,7 @@ def _load_contact_index():
         conn.close()
     except sqlite3.Error as e:
         logger.error(f"Database error loading contacts: {e}")
-    return names, lid_to_pn
+    return names, lid_to_pn, saved
 
 
 _CONTACT_INDEX = None
@@ -153,8 +162,8 @@ _CONTACT_INDEX_TS = 0.0
 _CONTACT_INDEX_TTL = 300.0  # 5 min
 
 
-def _get_contact_index(refresh: bool = False):
-    """Cache en memoria del indice de contactos, con TTL para no quedar obsoleto.
+def _refresh_contact_cache(refresh: bool = False):
+    """Cache en memoria (names, lid_to_pn, saved) con TTL para no quedar obsoleto.
 
     El server MCP es de larga vida; sin TTL, un contacto agregado/renombrado en
     WhatsApp no aparecia hasta reiniciar. Se recarga si pasa el TTL o si refresh=True.
@@ -165,6 +174,18 @@ def _get_contact_index(refresh: bool = False):
         _CONTACT_INDEX = _load_contact_index()
         _CONTACT_INDEX_TS = now
     return _CONTACT_INDEX
+
+
+def _get_contact_index(refresh: bool = False):
+    """Devuelve (names, lid_to_pn). Resuelve nombres con fallback a push name."""
+    names, lid_to_pn, _saved = _refresh_contact_cache(refresh)
+    return names, lid_to_pn
+
+
+def _get_saved_pns(refresh: bool = False) -> set:
+    """Numeros realmente guardados en la agenda (con first_name/full_name)."""
+    _names, _lid_to_pn, saved = _refresh_contact_cache(refresh)
+    return saved
 
 
 def resolve_contact_name(jid: str) -> Optional[str]:
@@ -1156,12 +1177,22 @@ def send_poll(chat_jid: str, question: str, options: List[str], selectable_count
         return False, str(e)
 
 
-def list_all_contacts(limit: int = 0) -> List[Contact]:
-    """Lista toda la libreta de contactos de WhatsApp (unificada por numero)."""
+def list_all_contacts(limit: int = 0, saved_only: bool = False) -> List[Contact]:
+    """Lista la libreta de contactos de WhatsApp (unificada por numero).
+
+    Args:
+        limit: maximo a devolver (0 = todos).
+        saved_only: si True, solo los contactos realmente GUARDADOS en tu agenda
+            (con nombre que tu asignaste), excluyendo a quienes solo se capturaron
+            por su push name al chatear contigo.
+    """
     names_idx, lid_to_pn = _get_contact_index()
+    saved = _get_saved_pns() if saved_only else None
     seen = {}
     for pn, name in names_idx.items():
         canon = lid_to_pn.get(pn, pn)  # unificar lid -> numero
+        if saved_only and pn not in saved and canon not in saved:
+            continue
         if canon not in seen:
             seen[canon] = names_idx.get(canon) or name
     result = [Contact(phone_number=pn, name=name, jid=f"{pn}@s.whatsapp.net")
