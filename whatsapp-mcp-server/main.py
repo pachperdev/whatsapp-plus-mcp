@@ -1,70 +1,70 @@
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
+
 from mcp.server.fastmcp import FastMCP
-from whatsapp import Contact, Chat, MessageContext
-from whatsapp import (
-    search_contacts as whatsapp_search_contacts,
-    list_messages as whatsapp_list_messages,
-    list_chats as whatsapp_list_chats,
-    get_chat as whatsapp_get_chat,
-    get_direct_chat_by_contact as whatsapp_get_direct_chat_by_contact,
-    get_contact_chats as whatsapp_get_contact_chats,
-    get_last_interaction as whatsapp_get_last_interaction,
-    get_message_context as whatsapp_get_message_context,
-    send_message as whatsapp_send_message,
-    send_file as whatsapp_send_file,
-    send_audio_message as whatsapp_audio_voice_message,
-    download_media as whatsapp_download_media,
-    refresh_contacts as whatsapp_refresh_contacts,
-    list_groups as whatsapp_list_groups,
-    mark_as_read as whatsapp_mark_as_read,
-    react_to_message as whatsapp_react_to_message,
-    edit_message as whatsapp_edit_message,
-    delete_message as whatsapp_delete_message,
-    send_typing as whatsapp_send_typing,
-    send_poll as whatsapp_send_poll,
-    list_all_contacts as whatsapp_list_all_contacts,
-    check_whatsapp as whatsapp_check_whatsapp,
-    get_profile_picture as whatsapp_get_profile_picture,
-    get_user_info as whatsapp_get_user_info,
-    get_group_participants as whatsapp_get_group_participants,
-    get_group_invite_link as whatsapp_get_group_invite_link,
-    join_group as whatsapp_join_group,
-    leave_group as whatsapp_leave_group,
-    set_group_name as whatsapp_set_group_name,
-    set_group_topic as whatsapp_set_group_topic,
-    block_contact as whatsapp_block_contact,
-    unblock_contact as whatsapp_unblock_contact,
-    mute_chat as whatsapp_mute_chat,
-    pin_chat as whatsapp_pin_chat,
-    archive_chat as whatsapp_archive_chat,
-    mark_chat as whatsapp_mark_chat,
-    star_message as whatsapp_star_message,
-    get_chat_settings as whatsapp_get_chat_settings,
-    request_more_history as whatsapp_request_more_history,
-    create_group as whatsapp_create_group,
-    update_group_participants as whatsapp_update_group_participants,
-    set_disappearing_messages as whatsapp_set_disappearing_messages,
-    get_status as whatsapp_get_status,
-    set_status_message as whatsapp_set_status_message,
-    get_business_profile as whatsapp_get_business_profile,
-    get_user_devices as whatsapp_get_user_devices,
-    set_default_disappearing as whatsapp_set_default_disappearing,
-    set_group_description as whatsapp_set_group_description,
-    set_group_announce as whatsapp_set_group_announce,
-    set_group_locked as whatsapp_set_group_locked,
-    set_group_photo as whatsapp_set_group_photo,
-    vote_poll as whatsapp_vote_poll,
-    set_group_join_approval as whatsapp_set_group_join_approval,
-    get_group_join_requests as whatsapp_get_group_join_requests,
-    review_group_join_request as whatsapp_review_group_join_request,
-    get_group_info_from_invite as whatsapp_get_group_info_from_invite,
-    join_group_with_invite as whatsapp_join_group_with_invite,
-    set_presence as whatsapp_set_presence,
-    subscribe_presence as whatsapp_subscribe_presence,
-    get_presence as whatsapp_get_presence,
-    logout as whatsapp_logout,
-    get_unread_chats as whatsapp_get_unread_chats
-)
+
+from whatsapp import Chat, Contact, MessageContext
+from whatsapp import archive_chat as whatsapp_archive_chat
+from whatsapp import block_contact as whatsapp_block_contact
+from whatsapp import check_whatsapp as whatsapp_check_whatsapp
+from whatsapp import create_group as whatsapp_create_group
+from whatsapp import delete_message as whatsapp_delete_message
+from whatsapp import download_media as whatsapp_download_media
+from whatsapp import edit_message as whatsapp_edit_message
+from whatsapp import get_business_profile as whatsapp_get_business_profile
+from whatsapp import get_chat as whatsapp_get_chat
+from whatsapp import get_chat_settings as whatsapp_get_chat_settings
+from whatsapp import get_contact_chats as whatsapp_get_contact_chats
+from whatsapp import get_direct_chat_by_contact as whatsapp_get_direct_chat_by_contact
+from whatsapp import get_group_info_from_invite as whatsapp_get_group_info_from_invite
+from whatsapp import get_group_invite_link as whatsapp_get_group_invite_link
+from whatsapp import get_group_join_requests as whatsapp_get_group_join_requests
+from whatsapp import get_group_participants as whatsapp_get_group_participants
+from whatsapp import get_last_interaction as whatsapp_get_last_interaction
+from whatsapp import get_message_context as whatsapp_get_message_context
+from whatsapp import get_presence as whatsapp_get_presence
+from whatsapp import get_profile_picture as whatsapp_get_profile_picture
+from whatsapp import get_status as whatsapp_get_status
+from whatsapp import get_unread_chats as whatsapp_get_unread_chats
+from whatsapp import get_user_devices as whatsapp_get_user_devices
+from whatsapp import get_user_info as whatsapp_get_user_info
+from whatsapp import join_group as whatsapp_join_group
+from whatsapp import join_group_with_invite as whatsapp_join_group_with_invite
+from whatsapp import leave_group as whatsapp_leave_group
+from whatsapp import list_all_contacts as whatsapp_list_all_contacts
+from whatsapp import list_chats as whatsapp_list_chats
+from whatsapp import list_groups as whatsapp_list_groups
+from whatsapp import list_messages as whatsapp_list_messages
+from whatsapp import logout as whatsapp_logout
+from whatsapp import mark_as_read as whatsapp_mark_as_read
+from whatsapp import mark_chat as whatsapp_mark_chat
+from whatsapp import mute_chat as whatsapp_mute_chat
+from whatsapp import pin_chat as whatsapp_pin_chat
+from whatsapp import react_to_message as whatsapp_react_to_message
+from whatsapp import refresh_contacts as whatsapp_refresh_contacts
+from whatsapp import request_more_history as whatsapp_request_more_history
+from whatsapp import review_group_join_request as whatsapp_review_group_join_request
+from whatsapp import search_contacts as whatsapp_search_contacts
+from whatsapp import send_audio_message as whatsapp_audio_voice_message
+from whatsapp import send_file as whatsapp_send_file
+from whatsapp import send_message as whatsapp_send_message
+from whatsapp import send_poll as whatsapp_send_poll
+from whatsapp import send_typing as whatsapp_send_typing
+from whatsapp import set_default_disappearing as whatsapp_set_default_disappearing
+from whatsapp import set_disappearing_messages as whatsapp_set_disappearing_messages
+from whatsapp import set_group_announce as whatsapp_set_group_announce
+from whatsapp import set_group_description as whatsapp_set_group_description
+from whatsapp import set_group_join_approval as whatsapp_set_group_join_approval
+from whatsapp import set_group_locked as whatsapp_set_group_locked
+from whatsapp import set_group_name as whatsapp_set_group_name
+from whatsapp import set_group_photo as whatsapp_set_group_photo
+from whatsapp import set_group_topic as whatsapp_set_group_topic
+from whatsapp import set_presence as whatsapp_set_presence
+from whatsapp import set_status_message as whatsapp_set_status_message
+from whatsapp import star_message as whatsapp_star_message
+from whatsapp import subscribe_presence as whatsapp_subscribe_presence
+from whatsapp import unblock_contact as whatsapp_unblock_contact
+from whatsapp import update_group_participants as whatsapp_update_group_participants
+from whatsapp import vote_poll as whatsapp_vote_poll
 
 # Initialize FastMCP server
 mcp = FastMCP("whatsapp")

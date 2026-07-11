@@ -1,0 +1,10 @@
+# golangci-lint v2 — set estándar (errcheck, govet, ineffassign, staticcheck,
+# unused). El código pasa en verde con este set; ampliar linters se hace en fases
+# posteriores junto con la modularización, para no dejar el CI en rojo.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard

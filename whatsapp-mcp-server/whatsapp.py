@@ -1,13 +1,15 @@
+import json
+import logging
+import os.path
 import sqlite3
 import sys
 import time
-import logging
-from datetime import datetime
 from dataclasses import dataclass
-from typing import Optional, List, Tuple, Dict, Any
-import os.path
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+
 import requests
-import json
+
 import audio
 
 # Logging SIEMPRE a stderr: en transporte stdio, stdout es el canal del protocolo

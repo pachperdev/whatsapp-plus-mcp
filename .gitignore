@@ -5,8 +5,10 @@
 claude_desktop_config.json
 whatsapp.log
 
-# Binario compilado del bridge (artefacto de build)
+# Binario compilado del bridge (artefacto de build). Cubre el nombre explícito
+# (-o whatsapp-bridge) y el del módulo (whatsapp-client) que produce `go build`.
 whatsapp-bridge/whatsapp-bridge
+whatsapp-bridge/whatsapp-client
 
 # Config MCP local (rutas absolutas de la máquina, no portable)
 .mcp.json
@@ -18,3 +20,8 @@ AUDIT.md
 # Datos de runtime del bridge: DBs (mensajes/sesión), token, y MEDIA descargada
 # (fotos/audios/videos/documentos/stickers privados). NADA de store/ debe versionarse.
 whatsapp-bridge/store/
+
+# Artefactos de herramientas locales (no versionar)
+.claude/
+.atl/
+.ruff_cache/

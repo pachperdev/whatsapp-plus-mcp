@@ -2,6 +2,7 @@ import os
 import subprocess
 import tempfile
 
+
 def convert_to_opus_ogg(input_file, output_file=None, bitrate="32k", sample_rate=24000):
     """
     Convert an audio file to Opus format in an Ogg container.
