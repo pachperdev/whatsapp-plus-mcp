@@ -89,6 +89,18 @@ On first run it prints a **QR code** — scan it from your phone (**WhatsApp →
 
 > Keep the bridge running in its own terminal. **Without it running, the database stops updating** (no new messages, no live actions).
 
+#### Bridge configuration (environment variables)
+
+All optional — the defaults reproduce the historic layout, and paths are resolved to absolute at startup (so the bridge no longer silently creates a stray `store/` when launched from another directory).
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WHATSAPP_BRIDGE_ADDR` | `127.0.0.1:8080` | Address the REST API binds to. **Validated to be loopback** (`127.0.0.1` / `::1` / `localhost`); `0.0.0.0`, `:8080` or any routable IP is rejected so the bridge can't be exposed to the network. |
+| `WHATSAPP_STORE_DIR` | `store` | Directory for the session DB (`whatsapp.db`), history (`messages.db`), auth token and downloaded media. |
+| `WHATSAPP_MEDIA_ALLOWED_DIRS` | *(unset)* | Optional `:`-separated allowlist of directories `send_file` / `set_group_photo` may read from. **Unset = no location restriction** (historic behavior). Setting it confines outgoing media to those trees — recommended hardening against prompt-injection exfiltration. |
+
+The Python server has its own env vars (`WHATSAPP_MESSAGES_DB`, `WHATSAPP_SESSION_DB`, `WHATSAPP_BRIDGE_TOKEN_FILE`, `WHATSAPP_API_BASE_URL`) — see `whatsapp_mcp/config.py`.
+
 ### 3. Register the MCP server with your client
 
 Point your client at the Python server via `uv`. Replace the paths:
@@ -156,8 +168,9 @@ Some incoming data is captured passively (no dedicated tool) and surfaces throug
 ## Security & privacy
 
 - **Local-first.** Messages and media live in SQLite under `whatsapp-bridge/store/` and are only read when the LLM calls a tool.
-- **Loopback only.** The bridge binds `127.0.0.1:8080`, never `0.0.0.0`.
-- **Token auth.** Every `/api/*` route requires an `X-Auth-Token` header. The bridge generates a random token on startup and writes it to `whatsapp-bridge/store/.bridge_token` (mode `0600`); the Python side reads the same file and sends it on every request.
+- **Loopback only.** The bridge binds `127.0.0.1:8080`, never `0.0.0.0`. The bind address is validated at startup to reject any non-loopback host.
+- **Token auth.** Every `/api/*` route requires an `X-Auth-Token` header. The bridge generates a random token on startup and writes it to `whatsapp-bridge/store/.bridge_token` (mode `0600`, re-applied on reuse); the Python side reads the same file and sends it on every request. Request bodies are capped at 1 MiB.
+- **Media exfiltration guard.** `send_file` / `set_group_photo` reject hidden paths and the bridge's own secrets (session DB, history, token) — compared **by inode** (`os.SameFile`), so case-variant paths (`STORE/whatsapp.db` on case-insensitive filesystems) and hardlinks can't sneak them out. Downloaded media under `store/<chat>/` stays forwardable. Set `WHATSAPP_MEDIA_ALLOWED_DIRS` to additionally confine sends to an allowlist.
 - **Nothing private is committed.** `whatsapp-bridge/store/` (DBs, token, downloaded media) and `.mcp.json` (machine-specific paths) are git-ignored.
 
 ---

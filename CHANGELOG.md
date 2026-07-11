@@ -11,9 +11,48 @@ Forked from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).
 
 ## [Unreleased]
 
-Open work — **Phase 4 (Quality/infra)**:
-MCP SDK `1.6 → 1.28` upgrade, Pydantic structured output, MCP resources/prompts,
-automated tests + CI + linters.
+### Security
+
+- **Media exfiltration guard hardened** (`ValidateMediaPath`): the `store/`
+  protection now compares **by inode** (`os.SameFile`) instead of a case-sensitive
+  string prefix. Closes a bypass on case-insensitive filesystems (APFS/NTFS) where
+  `STORE/whatsapp.db` leaked the session keys via `send_file` / `set_group_photo`,
+  plus a hardlink bypass. The validator returns the canonical path and callers read
+  from it, closing the TOCTOU window between validation and read.
+- **Anti-ban check extended** to `react` / `edit` / `revoke` / `poll` / `poll_vote`
+  (they send via `client.SendMessage` directly and previously skipped the temp-ban
+  gate). Outgoing stanzas are now paused on all send paths while temp-banned.
+- **Opt-in media allowlist** (`WHATSAPP_MEDIA_ALLOWED_DIRS`): confines `send_file` /
+  `set_group_photo` to an allowlist of directories, mitigating prompt-injection
+  exfiltration. Unset = historic behavior.
+- **Loopback bind validated** (`WHATSAPP_BRIDGE_ADDR`): non-loopback addresses are
+  rejected at startup. Auth token re-`chmod`ed to `0600` on reuse. Request bodies
+  capped at 1 MiB (`MaxBytesReader`).
+- **OGG parser bounds fix**: `AnalyzeOggOpus` no longer panics on a truncated
+  `OpusHead` (off-by-4 in the `SampleRate` read).
+
+### Changed
+
+- **Bridge configuration by environment** (`internal/config`): `WHATSAPP_BRIDGE_ADDR`
+  / `WHATSAPP_STORE_DIR` / `WHATSAPP_MEDIA_ALLOWED_DIRS`, all paths resolved to
+  absolute at startup (no more accidental CWD-relative `store/`).
+- **`download_media → send_file`** works again: only the `store/` **root** (session /
+  history / token) is protected; downloaded media in `store/<chat>/` is forwardable.
+- **MCP contract refinements**: `edit_message` marked destructive; `request_more_history`
+  reclassified non-idempotent; `get_group_invite_link` split into a pure-read tool and
+  a destructive `reset_group_invite_link` (**63 tools**).
+
+### Internal / quality
+
+- Bridge: 49 REST handlers deduplicated behind `decodeJSON` / `parseJID` /
+  `respondErr` / `respondOK` (`-176` lines); `/api/send` errors unified to JSON; the
+  two remaining ad-hoc SQL queries moved out of the `api` layer into `store` methods.
+- Python: layer leak in `bridge.get_unread_chats` removed (name resolution moved to
+  the tools layer); `_bridge_get` helper; contract tests for the Pydantic models.
+- Tests: `httptest` harness for `NewServer`; regression tests for every security fix.
+
+Previously completed under **Phase 4 (Quality/infra)**: MCP SDK `1.6 → 1.28`,
+Pydantic structured output, MCP prompts, CI + linters.
 
 ---
 

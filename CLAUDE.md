@@ -6,11 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Model Context Protocol (MCP) server for a **personal WhatsApp account**, built on two cooperating processes:
 
-1. **Go WhatsApp Bridge** (`whatsapp-bridge/main.go`, ~4000 lines): connects to WhatsApp Web's multidevice API via [whatsmeow](https://github.com/tulir/whatsmeow), handles QR auth, persists message/chat history to SQLite, listens for live events, and exposes a token-authenticated REST API on `127.0.0.1:8080`.
+1. **Go WhatsApp Bridge** (`whatsapp-bridge/`): connects to WhatsApp Web's multidevice API via [whatsmeow](https://github.com/tulir/whatsmeow), handles QR auth, persists message/chat history to SQLite, listens for live events, and exposes a token-authenticated REST API on `127.0.0.1:8080`. Modularized into `main.go` (bootstrap + event dispatcher + HTTP lifecycle) and `internal/{config,media,auth,store,wa,api}`.
 
-2. **Python MCP Server** (`whatsapp-mcp-server/`): exposes WhatsApp functionality as MCP tools. **Reads** come straight from the SQLite DB; **writes/actions** go to the Go bridge over HTTP.
+2. **Python MCP Server** (`whatsapp-mcp-server/`): the `whatsapp_mcp` package (`config` → `models` → `db` → `bridge` → `tools`/`prompts` → `server`) exposes WhatsApp functionality as MCP tools. **Reads** come straight from the SQLite DB (`db.py`); **writes/actions** go to the Go bridge over HTTP (`bridge.py`).
 
-> **This fork is far ahead of upstream.** It exposes **62 MCP tools** (upstream had ~12). See `CHANGELOG.md` for the milestone history. Commits and code comments are written in Spanish.
+> **This fork is far ahead of upstream.** It exposes **63 MCP tools** (upstream had ~12). See `CHANGELOG.md` for the milestone history. Commits and code comments are written in Spanish.
 
 ## Architecture
 
@@ -21,15 +21,16 @@ A Model Context Protocol (MCP) server for a **personal WhatsApp account**, built
 
 ### Adding a new tool (the canonical pattern)
 Every action-style tool is three small pieces, all following the same shape:
-1. **Bridge handler** in `main.go`: `http.HandleFunc("/api/<name>", withAuth(func(...)))` calling the relevant whatsmeow `Client` method.
-2. **Client function** in `whatsapp.py`: a thin wrapper, almost always `_bridge_post("<name>", payload)`.
-3. **MCP tool** in `main.py`: `@mcp.tool()` that calls the `whatsapp.py` function.
+1. **Bridge handler** in `internal/api/server.go`: `mux.HandleFunc("/api/<name>", withAuth(token, func(...)))`. Use the shared helpers — `decodeJSON(w, r, &req)`, `parseJID(w, raw, field)`, `respondErr`/`respondOK` — and call the relevant `wa.Service` method (or `client` directly). Wrap sends that bypass `svc.SendMessage` in `banBlocked(w, svc)`.
+2. **Client function** in `whatsapp_mcp/bridge.py`: a thin wrapper, almost always `_bridge_post("<name>", payload)` (or `_bridge_get` for reads).
+3. **MCP tool** in `whatsapp_mcp/tools.py`: `@mcp.tool(annotations=...)` that calls the `bridge.py` function.
 
-Event-driven features (incoming edits, votes, presence, ban status) instead add a `case` to the bridge's event handler and persist to SQLite. `Build*`-based sends (`BuildEdit`, `BuildRevoke`, `BuildPollCreation`, `BuildPollVote`) all go out via `SendMessage`. For available whatsmeow methods, see the [whatsmeow docs](https://pkg.go.dev/go.mau.fi/whatsmeow) or the existing handlers in `main.go` as templates.
+Event-driven features (incoming edits, votes, presence, ban status) instead add a `case` to the dispatcher in `main.go` and a handler method in `internal/wa/events.go` that persists to SQLite. `Build*`-based sends (`BuildEdit`, `BuildRevoke`, `BuildPollCreation`, `BuildPollVote`) all go out via `SendMessage`. For available whatsmeow methods, see the [whatsmeow docs](https://pkg.go.dev/go.mau.fi/whatsmeow) or the existing handlers as templates.
 
 ### Security model (important — not optional)
-- The bridge binds **loopback only** (`127.0.0.1:8080`), never `0.0.0.0`.
-- Every `/api/*` route is wrapped in `withAuth`, which requires the `X-Auth-Token` header. The bridge generates a random token on startup and writes it to `whatsapp-bridge/store/.bridge_token` (mode `0600`); the Python side reads that same file in `_bridge_token()` and sends it on every request via `_bridge_post`. If you add an endpoint, wrap it in `withAuth`.
+- The bridge binds **loopback only** (`127.0.0.1:8080`), never `0.0.0.0`. The bind address (`WHATSAPP_BRIDGE_ADDR`) is validated to be loopback at startup (`internal/config`).
+- Every `/api/*` route is wrapped in `withAuth` (constant-time token compare, fail-closed on empty token), which requires the `X-Auth-Token` header. The bridge generates a random token on startup and writes it to `<store>/.bridge_token` (mode `0600`, re-applied on reuse); the Python side reads that same file in `_bridge_token()` and sends it on every request via `_bridge_post`. If you add an endpoint, wrap it in `withAuth`. Request bodies are capped at 1 MiB via `decodeJSON`.
+- **Media path validation** (`internal/auth`, the `Validator`): `send_file` / `set_group_photo` reject hidden paths and the bridge's own store secrets, compared **by inode** (`os.SameFile`) so case-variant paths and hardlinks can't exfiltrate the session DB. It returns the canonical path (callers read from it — no TOCTOU). `WHATSAPP_MEDIA_ALLOWED_DIRS` optionally confines sends to an allowlist. Downloaded media in `store/<chat>/` stays sendable.
 
 ### Database (`whatsapp-bridge/store/messages.db`)
 - `chats`: `jid` (PK), `name`, `last_message_time`.
@@ -40,7 +41,7 @@ Event-driven features (incoming edits, votes, presence, ban status) instead add 
 
 ### Identifiers & name resolution
 - **JID**: `<number>@s.whatsapp.net` (individual), `<id>-<id>@g.us` (group), plus `@lid` (privacy-layer) identifiers WhatsApp now uses for some senders.
-- `whatsapp.py` unifies `@lid` ↔ phone-number JIDs when resolving contact names and direct chats — keep this in mind; a sender may appear under either form. Name resolution (`resolve_contact_name`, `get_sender_name`) queries the contact index / `chats` table.
+- `whatsapp_mcp/db.py` unifies `@lid` ↔ phone-number JIDs when resolving contact names and direct chats — keep this in mind; a sender may appear under either form. Name resolution (`resolve_contact_name`, `get_sender_name`) queries the contact index / `chats` table.
 
 ## Development Commands
 
@@ -61,14 +62,14 @@ uv run main.py                 # expects the bridge running + DB at ../whatsapp-
 ```
 Dependencies (`pyproject.toml`): `mcp[cli]`, `requests`, `httpx`; Python `>=3.11`. The server uses a global `requests.Session()` for keep-alive pooling to the bridge.
 
-## MCP Tools (62)
+## MCP Tools (63)
 
-Full list and signatures live in `whatsapp-mcp-server/main.py` (`@mcp.tool()` decorators). Grouped by area:
+Full list and signatures live in `whatsapp-mcp-server/whatsapp_mcp/tools.py` (`@mcp.tool()` decorators). Grouped by area:
 - **Read/search**: `search_contacts`, `list_all_contacts`, `refresh_contacts`, `list_messages`, `list_chats`, `get_chat`, `get_direct_chat_by_contact`, `get_contact_chats`, `get_last_interaction`, `get_message_context`, `get_unread_chats`, `list_groups`.
 - **Send**: `send_message` (supports `reply_to` + `@number` mentions), `send_file`, `send_audio_message`, `send_poll`, `vote_poll`, `send_typing`.
 - **Message ops**: `react_to_message`, `edit_message`, `delete_message`, `star_message`, `mark_as_read`, `download_media`.
 - **Chat state**: `mute_chat`, `pin_chat`, `archive_chat`, `mark_chat`, `get_chat_settings`, `set_disappearing_messages`, `request_more_history`.
-- **Groups**: `create_group`, `update_group_participants`, `get_group_participants`, `get_group_invite_link`, `join_group`, `leave_group`, `set_group_name/topic/description/announce/locked/photo`, join-approval + join-request tools, invite-link info/join.
+- **Groups**: `create_group`, `update_group_participants`, `get_group_participants`, `get_group_invite_link` (pure read) / `reset_group_invite_link` (revokes + regenerates), `join_group`, `leave_group`, `set_group_name/topic/description/announce/locked/photo`, join-approval + join-request tools, invite-link info/join.
 - **Contacts/identity/presence**: `check_whatsapp`, `get_user_info`, `get_user_devices`, `get_profile_picture`, `get_business_profile`, `block_contact`/`unblock_contact`, `set/subscribe/get_presence`.
 - **Account/session**: `get_status`, `set_status_message`, `set_default_disappearing`, `logout`.
 
@@ -88,5 +89,6 @@ Full list and signatures live in `whatsapp-mcp-server/main.py` (`@mcp.tool()` de
 
 ## Configuration
 - `.mcp.json` registers the server (runs `uv --directory <repo>/whatsapp-mcp-server run main.py`).
-- `whatsapp-bridge/go.mod`: Go 1.25, whatsmeow (pinned, ~2026-06), `modernc.org/sqlite`.
-- Roadmap status: Phases 1–3 + Tier A/B + Tier 3 are complete; **Phase 4 (Pydantic structured output, MCP SDK 1.6→1.28 upgrade, resources/prompts, tests + CI + linters) is the only open work.** See `CHANGELOG.md` for the milestone history.
+- **Bridge env vars** (all optional, defaults = historic layout; `internal/config`): `WHATSAPP_BRIDGE_ADDR` (loopback-validated), `WHATSAPP_STORE_DIR`, `WHATSAPP_MEDIA_ALLOWED_DIRS` (opt-in send allowlist). **Python env vars**: `WHATSAPP_MESSAGES_DB`, `WHATSAPP_SESSION_DB`, `WHATSAPP_BRIDGE_TOKEN_FILE`, `WHATSAPP_API_BASE_URL` (`whatsapp_mcp/config.py`).
+- `whatsapp-bridge/go.mod`: Go 1.25, whatsmeow (pinned, ~2026-07), `modernc.org/sqlite`.
+- Roadmap status: Phases 0–4 complete (security hardening, modularization Go + Python, MCP contract, tests + CI + linters). **Phase 5 — packaging plug-and-play (plugin manifest / `.mcpb`, precompiled multi-platform binaries, single supervised launcher) is the open work.** See `CHANGELOG.md`.
