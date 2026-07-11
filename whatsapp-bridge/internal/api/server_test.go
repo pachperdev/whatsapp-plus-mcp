@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"whatsapp-client/internal/wa"
 )
 
 const testToken = "s3cr3t-token"
@@ -63,6 +66,27 @@ func TestWithAuth_WrongToken_Unauthorized(t *testing.T) {
 	}
 	if called {
 		t.Fatal("token incorrecto: next NO debe ejecutarse")
+	}
+}
+
+// TestBanBlocked verifica el invariante anti-ban en los caminos de envio que no
+// pasan por svc.SendMessage (react/edit/revoke/poll/poll_vote): sin ban NO
+// bloquea; con ban temporal vigente responde 503 y corta.
+func TestBanBlocked(t *testing.T) {
+	svc := wa.NewService(nil, nil, nil)
+
+	rec := httptest.NewRecorder()
+	if banBlocked(rec, svc) {
+		t.Fatal("sin ban temporal NO debería bloquear")
+	}
+
+	svc.OnTempBan(104, "spam detectado", time.Hour)
+	rec = httptest.NewRecorder()
+	if !banBlocked(rec, svc) {
+		t.Fatal("con ban temporal vigente DEBERÍA bloquear")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ban temporal: status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
 

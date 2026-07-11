@@ -46,6 +46,23 @@ func withAuth(token string, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// banBlocked responde 503 y devuelve true si hay un ban temporal vigente. Los
+// envios salientes que NO pasan por svc.SendMessage (react/edit/revoke/poll/
+// poll_vote usan client.SendMessage directo con Build*) deben chequearlo igual:
+// son stanzas salientes que pueden empeorar un ban en curso. Preserva el
+// invariante anti-ban del proyecto en todos los caminos de envio.
+func banBlocked(w http.ResponseWriter, svc *wa.Service) bool {
+	if banned, reason := svc.IsTempBanned(); banned {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]interface{}{
+			"success": false,
+			"message": fmt.Sprintf("envio bloqueado: cuenta con ban temporal (%s). Espera a que expire; ver /api/status", reason),
+		})
+		return true
+	}
+	return false
+}
+
 // NewServer registra todas las rutas REST del bridge sobre un mux propio (no el
 // DefaultServeMux), cada una envuelta en withAuth con el token compartido, y devuelve el
 // handler resultante. Los handlers capturan svc/client/st por closure.
@@ -248,6 +265,9 @@ func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore
 	// Handler: react to a message with an emoji
 	mux.HandleFunc("/api/react", withAuth(token, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if banBlocked(w, svc) {
+			return
+		}
 		var req ReactRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -278,6 +298,9 @@ func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore
 	// Handler: edit a previously sent message
 	mux.HandleFunc("/api/edit", withAuth(token, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if banBlocked(w, svc) {
+			return
+		}
 		var req EditRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -303,6 +326,9 @@ func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore
 	// Handler: revoke (delete for everyone) a message
 	mux.HandleFunc("/api/revoke", withAuth(token, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if banBlocked(w, svc) {
+			return
+		}
 		var req RevokeRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -364,6 +390,9 @@ func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore
 	// Handler: send a poll
 	mux.HandleFunc("/api/poll", withAuth(token, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if banBlocked(w, svc) {
+			return
+		}
 		var req PollRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -1506,6 +1535,9 @@ func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore
 	// Handler: vote in a poll
 	mux.HandleFunc("/api/poll_vote", withAuth(token, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if banBlocked(w, svc) {
+			return
+		}
 		var req PollVoteRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
