@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -1512,8 +1513,11 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	var fileLength uint64
 	var err error
 
-	// First, check if we already have this file
-	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(chatJID, ":", "_"))
+	// First, check if we already have this file. Sanitizamos el chatJID a un unico
+	// componente de directorio: ademas de ":" reemplazamos separadores de ruta para
+	// que no pueda escapar de store/ (defensa en profundidad; el handler ya valida el JID).
+	safeChat := strings.NewReplacer(":", "_", "/", "_", "\\", "_").Replace(chatJID)
+	chatDir := filepath.Join("store", safeChat)
 	localPath := ""
 
 	// Get media info from the database
@@ -1676,6 +1680,18 @@ func validateMediaPath(p string) error {
 			return fmt.Errorf("hidden path component %q not allowed", part)
 		}
 	}
+	// Rechaza cualquier archivo dentro del directorio store/ del bridge: ahi viven
+	// la sesion de WhatsApp (whatsapp.db, con las claves), el historial completo
+	// (messages.db) y el token de auth. No empiezan con "." (no los cubre el check
+	// de arriba) y ninguna media legitima vive ahi.
+	if storeDir, err := filepath.Abs("store"); err == nil {
+		if real, err2 := filepath.EvalSymlinks(storeDir); err2 == nil {
+			storeDir = real
+		}
+		if resolved == storeDir || strings.HasPrefix(resolved, storeDir+string(os.PathSeparator)) {
+			return fmt.Errorf("path inside store directory not allowed")
+		}
+	}
 	fi, err := os.Stat(resolved)
 	if err != nil {
 		return fmt.Errorf("cannot stat file: %v", err)
@@ -1684,6 +1700,21 @@ func validateMediaPath(p string) error {
 		return fmt.Errorf("not a regular file")
 	}
 	return nil
+}
+
+// goSafe corre fn en una goroutine con recover. Los handlers de eventos que corren
+// en goroutine (handleHistorySync, handlePollVote, handleCallOffer) procesan protobufs
+// influidos por la red y viven FUERA del recover per-request de net/http: un panic ahi
+// tumbaria todo el proceso. Aca lo logueamos con stack y seguimos vivos.
+func goSafe(logger waLog.Logger, name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Errorf("panic recuperado en %s: %v\n%s", name, r, debug.Stack())
+			}
+		}()
+		fn()
+	}()
 }
 
 // blockViaLID actualiza la blocklist replicando el formato NUEVO del protocolo de
@@ -1843,6 +1874,12 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		// Validate request
 		if req.MessageID == "" || req.ChatJID == "" {
 			http.Error(w, "Message ID and Chat JID are required", http.StatusBadRequest)
+			return
+		}
+		// Validar el JID (como el resto de handlers): ademas de correctitud, evita que
+		// un chat_jid tipo "../../x" arme un directorio fuera de store/ (path traversal).
+		if _, err := types.ParseJID(req.ChatJID); err != nil {
+			http.Error(w, "Invalid chat_jid", http.StatusBadRequest)
 			return
 		}
 
@@ -2954,6 +2991,13 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid group_jid"})
 			return
 		}
+		// Misma proteccion que el envio de media: sin esto un caller podria leer
+		// cualquier archivo del disco (incluida la sesion en store/) y subirlo.
+		if err := validateMediaPath(req.ImagePath); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]interface{}{"success": false, "message": fmt.Sprintf("invalid image_path: %v", err)})
+			return
+		}
 		avatar, err := os.ReadFile(req.ImagePath)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -3363,7 +3407,7 @@ func main() {
 		case *events.Message:
 			// Voto de encuesta entrante: descifrar y registrar (goroutine; no bloquea el dispatch).
 			if v.Message.GetPollUpdateMessage() != nil {
-				go handlePollVote(client, messageStore, v, logger)
+				goSafe(logger, "handlePollVote", func() { handlePollVote(client, messageStore, v, logger) })
 			}
 			// Process regular messages
 			handleMessage(client, messageStore, v, logger)
@@ -3373,7 +3417,7 @@ func main() {
 			// El history-sync puede tardar minutos (cientos de mensajes + lookups de red);
 			// si corre sincronico en el handler, los *events.Message en vivo quedan
 			// encolados detras y no se guardan hasta que termina (bug observado).
-			go handleHistorySync(client, messageStore, v, logger)
+			goSafe(logger, "handleHistorySync", func() { handleHistorySync(client, messageStore, v, logger) })
 
 		case *events.Receipt:
 			// T3-3: read-receipt PROPIO (leí el chat desde el teléfono u otro device) ->
@@ -3420,7 +3464,7 @@ func main() {
 
 		case *events.CallOffer:
 			// Llamada entrante: solo se registra (whatsmeow no maneja audio). Sin auto-rechazo.
-			go handleCallOffer(client, messageStore, v, logger)
+			goSafe(logger, "handleCallOffer", func() { handleCallOffer(client, messageStore, v, logger) })
 		}
 	})
 
@@ -3893,8 +3937,15 @@ func analyzeOggOpus(data []byte) (duration uint32, waveform []byte, err error) {
 
 		// Check if we're looking at an OpusHead packet (should be in first few pages)
 		if !foundOpusHead && pageSeqNum <= 1 {
-			// Look for "OpusHead" marker in this page
-			pageData := data[i : i+pageSize]
+			// Look for "OpusHead" marker in this page. pageSize incluye la suma de la
+			// tabla de segmentos (hasta ~65k) y puede exceder los bytes disponibles con
+			// un OGG truncado/malicioso: acotamos el slice a lo que realmente hay para
+			// no paniquear (data[i:i+pageSize] fuera de rango).
+			end := i + pageSize
+			if end > len(data) {
+				end = len(data)
+			}
+			pageData := data[i:end]
 			headPos := bytes.Index(pageData, []byte("OpusHead"))
 			if headPos >= 0 && headPos+12 < len(pageData) {
 				// Found OpusHead, extract sample rate and pre-skip
