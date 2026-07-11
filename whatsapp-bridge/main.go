@@ -26,13 +26,6 @@ import (
 	"whatsapp-client/internal/wa"
 )
 
-// MessageStore y Message viven ahora en internal/store. Estos aliases transicionales
-// evitan reescribir las ~80 referencias existentes en este archivo mientras el resto
-// del bridge se modulariza; se pueden retirar cuando todo referencie store.* directo.
-type MessageStore = store.MessageStore
-
-type Message = store.Message
-
 // goSafe corre fn en una goroutine con recover. Los handlers de eventos que corren
 // en goroutine (handleHistorySync, handlePollVote, handleCallOffer) procesan protobufs
 // influidos por la red y viven FUERA del recover per-request de net/http: un panic ahi
@@ -244,9 +237,10 @@ func main() {
 	}
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
 
-	// Run server in a goroutine so it doesn't block
+	// Run server in a goroutine so it doesn't block. ErrServerClosed es el retorno
+	// NORMAL de un apagado ordenado (srv.Shutdown), no un error: no lo logueamos.
 	go func() {
-		if err := srv.ListenAndServe(); err != nil {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("REST API server error: %v\n", err)
 		}
 	}()
@@ -261,6 +255,14 @@ func main() {
 	<-exitChan
 
 	fmt.Println("Disconnecting...")
+	// Apagado ordenado del server HTTP: drena las requests en vuelo (con un tope de
+	// 5s) ANTES de desconectar el cliente, para que ninguna toque una DB/cliente
+	// cerrándose. El defer messageStore.Close() corre al final del main.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		fmt.Printf("REST server shutdown error: %v\n", err)
+	}
 	// Disconnect client
 	client.Disconnect()
 }
