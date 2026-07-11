@@ -31,7 +31,7 @@ def _load_contact_index():
     lid_to_pn = {}
     saved = set()
     try:
-        conn = sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True, timeout=10)
     except sqlite3.Error as e:
         logger.error(f"Database error loading contacts: {e}")
         return names, lid_to_pn, saved

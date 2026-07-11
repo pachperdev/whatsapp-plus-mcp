@@ -295,7 +295,10 @@ def react_to_message(chat_jid: str, message_id: str, emoji: str) -> Dict[str, An
     success, status_message = bridge.react_to_message(chat_jid, message_id, emoji)
     return {"success": success, "message": status_message}
 
-@mcp.tool(annotations=_WRITE_IDEMPOTENT)
+# Destructivo = pisa contenido irrecuperable: editar reemplaza el texto anterior sin dejar
+# copia recuperable vía API (no es additive-only). Sigue siendo idempotente: reenviar el mismo
+# new_text converge al mismo estado (por eso _DESTRUCTIVE, que es destructive+idempotent).
+@mcp.tool(annotations=_DESTRUCTIVE)
 def edit_message(chat_jid: str, message_id: str, new_text: str) -> Dict[str, Any]:
     """Edit one of your own previously sent messages (within WhatsApp's ~20 min window).
 
@@ -393,15 +396,30 @@ def get_group_participants(group_jid: str) -> Dict[str, Any]:
     """
     return bridge.get_group_participants(group_jid)
 
-@mcp.tool(annotations=_WRITE)
-def get_group_invite_link(group_jid: str, reset: bool = False) -> Dict[str, Any]:
-    """Get a group's invite link.
+@mcp.tool(annotations=_READ_REMOTE)
+def get_group_invite_link(group_jid: str) -> Dict[str, Any]:
+    """Get a group's current invite link WITHOUT changing it (pure read).
+
+    Returns the existing link; it does NOT revoke or regenerate anything. To revoke the
+    current link and mint a new one, use reset_group_invite_link instead.
 
     Args:
         group_jid: The group JID
-        reset: True to revoke the previous link and generate a new one
     """
-    return bridge.get_group_invite_link(group_jid, reset)
+    return bridge.get_group_invite_link(group_jid, reset=False)
+
+@mcp.tool(annotations=_DESTRUCTIVE_NONIDEM)
+def reset_group_invite_link(group_jid: str) -> Dict[str, Any]:
+    """REVOKE the group's current invite link and generate a NEW one. Requires admin.
+
+    ⚠️ Irreversible: the previous link stops working immediately for everyone who has it.
+    Each call produces a different link (non-idempotent). To read the current link without
+    changing it, use get_group_invite_link instead.
+
+    Args:
+        group_jid: The group JID
+    """
+    return bridge.get_group_invite_link(group_jid, reset=True)
 
 @mcp.tool(annotations=_WRITE_IDEMPOTENT)
 def join_group(code: str) -> Dict[str, Any]:
@@ -813,4 +831,15 @@ def get_unread_chats() -> List[Dict[str, Any]]:
     (counted from when the bridge started; history-sync does not populate it) and cleared when
     you read the chat on your phone, reply, or call mark_as_read. Returns [] if nothing unread.
     """
-    return bridge.get_unread_chats()
+    # El bridge devuelve los chats crudos (capa de transporte). La resolución del nombre es
+    # lógica de dominio (índice de contactos de db), así que el enriquecimiento vive acá.
+    out: List[Dict[str, Any]] = []
+    for c in bridge.get_unread_chats():
+        jid = c.get("chat_jid", "")
+        out.append({
+            "chat_jid": jid,
+            "name": db.resolve_contact_name(jid) or jid,
+            "unread_count": c.get("unread_count", 0),
+            "last_time": c.get("last_time", ""),
+        })
+    return out

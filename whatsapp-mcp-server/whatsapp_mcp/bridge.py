@@ -12,7 +12,6 @@ from whatsapp_mcp.config import (
     WHATSAPP_API_BASE_URL,
     logger,
 )
-from whatsapp_mcp.db import resolve_contact_name
 
 # Sesion HTTP reutilizable: mantiene un pool de conexiones keep-alive al bridge en vez de
 # abrir/cerrar un socket TCP por request. urllib3 (debajo) es thread-safe para el uso
@@ -43,6 +42,25 @@ def _bridge_post(path: str, payload: dict) -> Dict[str, Any]:
         logger.error(f"bridge POST /{path} error: {e}")
         return {"success": False, "message": str(e)}
 
+
+def _bridge_get(path: str) -> Dict[str, Any]:
+    """GET a un endpoint del bridge con auth + timeout; devuelve el JSON o {success:False}."""
+    try:
+        resp = _SESSION.get(
+            f"{WHATSAPP_API_BASE_URL}/{path}",
+            headers={"X-Auth-Token": _bridge_token()},
+            timeout=REQUEST_TIMEOUT,
+        )
+        return resp.json()
+    except (requests.RequestException, ValueError) as e:
+        logger.error(f"bridge GET /{path} error: {e}")
+        return {"success": False, "message": str(e)}
+
+# send_message / send_file / send_audio_message NO se migran a _bridge_post a proposito:
+# devuelven Tuple[bool, str] (no un dict), distinguen el status_code y usan mensajes de error
+# propios ('Error: HTTP ...', 'Request error', 'Error parsing response', 'Unexpected error') que
+# _bridge_post no reproduce. Ademas validan input y send_audio_message limpia el .ogg temporal en
+# un finally. Reusar _bridge_post cambiaria esos mensajes/manejo observables, asi que se preservan.
 def send_message(recipient: str, message: str, reply_to: str = "", mentions: Optional[List[str]] = None) -> Tuple[bool, str]:
     response = None
     try:
@@ -207,17 +225,8 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
 
 def list_groups() -> List[Dict[str, Any]]:
     """Lista los grupos de WhatsApp de los que el usuario es miembro."""
-    try:
-        resp = _SESSION.get(
-            f"{WHATSAPP_API_BASE_URL}/groups",
-            headers={"X-Auth-Token": _bridge_token()},
-            timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        return data.get("groups", []) if data.get("success") else []
-    except (requests.RequestException, ValueError) as e:
-        logger.error(f"list_groups error: {e}")
-        return []
+    data = _bridge_get("groups")
+    return data.get("groups", []) if data.get("success") else []
 
 
 def mark_as_read(chat_jid: str, message_ids: List[str]) -> Tuple[bool, str]:
@@ -471,7 +480,13 @@ def set_disappearing_messages(chat_jid: str, duration: str = "off") -> Tuple[boo
 
 
 def get_status() -> Dict[str, Any]:
-    """Estado de conexion/sesion/ban del bridge (connected, logged_in, temp_banned, needs_qr, ...)."""
+    """Estado de conexion/sesion/ban del bridge (connected, logged_in, temp_banned, needs_qr, ...).
+
+    NO usa _bridge_get a proposito: este endpoint diferencia el status_code (devuelve un mensaje
+    'HTTP {code} - {text}' distinto en no-200) y usa prefijos de error propios ('Request error',
+    'Error parsing response') que _bridge_get no reproduce. Migrarlo cambiaria esos mensajes
+    observables (get_status es una tool de diagnostico), asi que se deja el try/except manual.
+    """
     try:
         response = _SESSION.get(f"{WHATSAPP_API_BASE_URL}/status",
                                 headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
@@ -606,29 +621,15 @@ def logout() -> Tuple[bool, str]:
 # --- Lote T3-3: chats no leídos ---
 
 def get_unread_chats() -> List[Dict[str, Any]]:
-    """Lista los chats con mensajes entrantes sin leer (rastreados en vivo por el bridge).
+    """Devuelve los chats con mensajes sin leer, CRUDOS del bridge (sin resolver nombres).
 
-    El conteo se cuenta desde que el bridge está corriendo (el history-sync no lo puebla),
-    y se limpia al leer el chat en el teléfono (read-receipt propio), al responder, o vía
-    mark_as_read. Devuelve [] si no hay no-leídos.
+    El conteo lo rastrea el bridge en vivo (el history-sync no lo puebla) y se limpia al leer
+    el chat en el teléfono (read-receipt propio), al responder, o vía mark_as_read. Cada item
+    trae chat_jid / unread_count / last_time tal cual los envía el bridge; el enriquecimiento
+    con el nombre resuelto es lógica de dominio y vive en la capa tools (get_unread_chats),
+    no acá en el transporte. Devuelve [] si no hay no-leídos o si el bridge falla.
     """
-    try:
-        response = _SESSION.get(f"{WHATSAPP_API_BASE_URL}/unread_chats",
-                                headers={"X-Auth-Token": _bridge_token()}, timeout=REQUEST_TIMEOUT)
-        if response.status_code != 200:
-            return []
-        data = response.json()
-    except (requests.RequestException, json.JSONDecodeError):
-        return []
+    data = _bridge_get("unread_chats")
     if not data.get("success"):
         return []
-    out: List[Dict[str, Any]] = []
-    for c in data.get("chats", []):
-        jid = c.get("chat_jid", "")
-        out.append({
-            "chat_jid": jid,
-            "name": resolve_contact_name(jid) or jid,
-            "unread_count": c.get("unread_count", 0),
-            "last_time": c.get("last_time", ""),
-        })
-    return out
+    return data.get("chats", [])
