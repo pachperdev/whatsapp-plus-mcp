@@ -121,8 +121,11 @@ func AnalyzeOggOpus(data []byte) (duration uint32, waveform []byte, err error) {
 				// Found OpusHead, extract sample rate and pre-skip
 				// OpusHead format: Magic(8) + Version(1) + Channels(1) + PreSkip(2) + SampleRate(4) + ...
 				headPos += 8 // Skip "OpusHead" marker
-				// PreSkip is 2 bytes at offset 10
-				if headPos+12 <= len(pageData) {
+				// PreSkip es 2 bytes en offset 10; SampleRate es 4 bytes en offset 12.
+				// El guard cubre el ULTIMO read (headPos+16), no el primero: si solo
+				// verificara headPos+12 (fin de PreSkip) el read de SampleRate se iria
+				// de rango con un OpusHead truncado.
+				if headPos+16 <= len(pageData) {
 					preSkip = binary.LittleEndian.Uint16(pageData[headPos+10 : headPos+12])
 					sampleRate = binary.LittleEndian.Uint32(pageData[headPos+12 : headPos+16])
 					foundOpusHead = true
