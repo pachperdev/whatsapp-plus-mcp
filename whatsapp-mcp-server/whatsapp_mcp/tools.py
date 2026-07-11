@@ -530,7 +530,10 @@ def get_chat_settings(chat_jid: str) -> Dict[str, Any]:
     """
     return bridge.get_chat_settings(chat_jid)
 
-@mcp.tool(annotations=_WRITE_IDEMPOTENT)
+# NO idempotente: cada llamada ancla en el mensaje mas viejo ya sincronizado y
+# pide el lote anterior, asi que llamadas repetidas traen historial progresivamente
+# mas viejo (semantica "load more", con efecto acumulativo por invocacion).
+@mcp.tool(annotations=_WRITE)
 def request_more_history(chat_jid: str, count: int = 50) -> Dict[str, Any]:
     """Request older messages for a chat (like "load earlier messages"). BEST-EFFORT.
 
