@@ -8,7 +8,7 @@ import (
 
 func TestValidateMediaPath(t *testing.T) {
 	dir := t.TempDir()
-	v := NewValidator(filepath.Join(dir, "store"))
+	v := NewValidator(filepath.Join(dir, "store"), nil)
 
 	regular := filepath.Join(dir, "photo.jpg")
 	if err := os.WriteFile(regular, []byte("data"), 0o644); err != nil {
@@ -53,7 +53,74 @@ func newStoreValidator(t *testing.T) (*Validator, string) {
 	if err := os.WriteFile(sessionDB, []byte("secret-session-keys"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	return NewValidator(storeDir), sessionDB
+	return NewValidator(storeDir, nil), sessionDB
+}
+
+// TestValidateAllowsStoreSubdirMedia: la media descargada vive en store/<chat>/ y
+// DEBE poder reenviarse (send_file). Solo la raíz de store/ está protegida.
+func TestValidateAllowsStoreSubdirMedia(t *testing.T) {
+	v, sessionDB := newStoreValidator(t)
+	storeDir := filepath.Dir(sessionDB)
+
+	chatDir := filepath.Join(storeDir, "123@s.whatsapp.net")
+	if err := os.MkdirAll(chatDir, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	media := filepath.Join(chatDir, "photo.jpg")
+	if err := os.WriteFile(media, []byte("jpeg-bytes"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if _, err := v.Validate(media); err != nil {
+		t.Errorf("media en store/<chat>/ debería aceptarse (reenvío de descargas), got: %v", err)
+	}
+}
+
+// TestValidateHardlinkInSubdir: un hardlink a whatsapp.db colocado en un subdir de
+// media debe rechazarse igual (comparte inode, aunque no esté en la raíz).
+func TestValidateHardlinkInSubdir(t *testing.T) {
+	v, sessionDB := newStoreValidator(t)
+	storeDir := filepath.Dir(sessionDB)
+	chatDir := filepath.Join(storeDir, "123@s.whatsapp.net")
+	if err := os.MkdirAll(chatDir, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	link := filepath.Join(chatDir, "innocent.jpg")
+	if err := os.Link(sessionDB, link); err != nil {
+		t.Skipf("hardlink no soportado: %v", err)
+	}
+	if _, err := v.Validate(link); err == nil {
+		t.Error("hardlink a whatsapp.db en un subdir debería rechazarse")
+	}
+}
+
+// TestValidateAllowlist: con allowlist configurada, solo se acepta media que viva
+// dentro de alguno de los directorios permitidos; el resto se rechaza.
+func TestValidateAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	allowed := filepath.Join(dir, "outbox")
+	other := filepath.Join(dir, "other")
+	for _, d := range []string{allowed, other} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+	}
+	v := NewValidator(filepath.Join(dir, "store"), []string{allowed})
+
+	inside := filepath.Join(allowed, "ok.jpg")
+	if err := os.WriteFile(inside, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if _, err := v.Validate(inside); err != nil {
+		t.Errorf("archivo dentro de la allowlist debería aceptarse, got: %v", err)
+	}
+
+	outside := filepath.Join(other, "no.jpg")
+	if err := os.WriteFile(outside, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if _, err := v.Validate(outside); err == nil {
+		t.Error("archivo fuera de la allowlist debería rechazarse")
+	}
 }
 
 // TestValidateMediaPathRejectsStore verifica que no se pueda leer/exfiltrar la

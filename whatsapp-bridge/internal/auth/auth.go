@@ -38,14 +38,18 @@ func GetOrCreateBridgeToken(storeDir string) (string, error) {
 }
 
 // Validator valida rutas de media contra exfiltracion. Conoce el directorio del
-// store para proteger la sesion/historial/token que viven ahi.
+// store (para proteger sesion/historial/token) y, opcionalmente, una allowlist de
+// directorios desde los que se permite enviar (confinamiento opt-in).
 type Validator struct {
-	storeDir string
+	storeDir    string
+	allowedDirs []string
 }
 
-// NewValidator crea un Validator. storeDir debe ser absoluto.
-func NewValidator(storeDir string) *Validator {
-	return &Validator{storeDir: storeDir}
+// NewValidator crea un Validator. storeDir debe ser absoluto. allowedDirs vacio
+// desactiva el confinamiento por ubicacion (se preserva el comportamiento
+// historico: cualquier archivo regular no-oculto fuera del store es enviable).
+func NewValidator(storeDir string, allowedDirs []string) *Validator {
+	return &Validator{storeDir: storeDir, allowedDirs: allowedDirs}
 }
 
 // Validate protege contra exfiltracion de archivos: resuelve symlinks, rechaza
@@ -78,41 +82,76 @@ func (v *Validator) Validate(p string) (string, error) {
 	if err := v.rejectStorePaths(resolved, fi); err != nil {
 		return "", err
 	}
+	if err := v.enforceAllowlist(resolved); err != nil {
+		return "", err
+	}
 	return resolved, nil
 }
 
-// rejectStorePaths bloquea cualquier archivo que sea (o viva dentro de) el store
-// del bridge, donde viven la sesion de WhatsApp (whatsapp.db, con las claves), el
-// historial (messages.db) y el token de auth. Compara por INODE (os.SameFile), no
-// por prefijo de string: en un filesystem case-insensitive (APFS/NTFS) el path
-// "STORE/whatsapp.db" apunta al MISMO archivo que "store/whatsapp.db" pero un
-// prefijo case-sensitive no lo detectaba (bypass de exfiltracion); y un hardlink
-// fuera de store/ comparte inode con el original. Ambos vectores se cierran aca.
+// rejectStorePaths bloquea los archivos SENSIBLES del store del bridge: la sesion de
+// WhatsApp (whatsapp.db, con las claves), el historial (messages.db), el token y sus
+// sidecars WAL/SHM —todos viven en la RAIZ de store/—. La media descargada vive en
+// subdirectorios (store/<chat>/...) y NO se bloquea, para poder reenviarla. Compara
+// por INODE (os.SameFile), no por prefijo de string: en un filesystem
+// case-insensitive (APFS/NTFS) "STORE/whatsapp.db" apunta al MISMO archivo que
+// "store/whatsapp.db" pero un prefijo case-sensitive no lo detectaba (bypass de
+// exfiltracion); y un hardlink comparte inode con el original desde otro path.
 func (v *Validator) rejectStorePaths(resolved string, fi os.FileInfo) error {
 	storeDir := v.storeDir
 	if real, err := filepath.EvalSymlinks(storeDir); err == nil {
 		storeDir = real
 	}
-	// (a) rechaza si algun ancestro de resolved ES el directorio store/
-	// (case-insensitive-safe: comparar inodes ignora el casing del path).
-	if di, err := os.Stat(storeDir); err == nil {
-		for cur := filepath.Dir(resolved); ; {
-			if ci, err2 := os.Stat(cur); err2 == nil && os.SameFile(ci, di) {
-				return fmt.Errorf("path inside store directory not allowed")
-			}
-			parent := filepath.Dir(cur)
-			if parent == cur {
-				break
-			}
-			cur = parent
-		}
+	di, err := os.Stat(storeDir)
+	if err != nil {
+		return nil // sin store resoluble no hay nada que proteger
+	}
+	// (a) rechaza si el padre INMEDIATO de resolved ES la raiz de store/: cubre
+	// whatsapp.db/messages.db/.bridge_token y cualquier sidecar -wal/-shm/-journal,
+	// sin bloquear la media en store/<chat>/. Inode-safe (ignora el casing).
+	if pi, err := os.Stat(filepath.Dir(resolved)); err == nil && os.SameFile(pi, di) {
+		return fmt.Errorf("path inside store root not allowed")
 	}
 	// (b) rechaza si resolved es un hardlink a un archivo sensible del store
-	// (mismo inode, otro path fuera de store/).
+	// (mismo inode, otro path —incluso dentro de un subdir de media—).
 	for _, name := range []string{"whatsapp.db", "messages.db", ".bridge_token"} {
 		if si, err := os.Stat(filepath.Join(storeDir, name)); err == nil && os.SameFile(fi, si) {
 			return fmt.Errorf("path aliases a protected store file")
 		}
 	}
 	return nil
+}
+
+// enforceAllowlist, si hay allowlist configurada, exige que resolved viva dentro de
+// alguno de los directorios permitidos. Vacia = sin restriccion de ubicacion. La
+// contencion se evalua por inode (os.SameFile en la cadena de ancestros), robusta a
+// filesystems case-insensitive y symlinks.
+func (v *Validator) enforceAllowlist(resolved string) error {
+	if len(v.allowedDirs) == 0 {
+		return nil
+	}
+	for _, dir := range v.allowedDirs {
+		if underDir(resolved, dir) {
+			return nil
+		}
+	}
+	return fmt.Errorf("path outside the allowed media directories")
+}
+
+// underDir reporta si resolved vive dentro de dir (a cualquier profundidad),
+// comparando por inode (os.SameFile) en la cadena de directorios ancestros.
+func underDir(resolved, dir string) bool {
+	di, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+	for cur := filepath.Dir(resolved); ; {
+		if ci, err := os.Stat(cur); err == nil && os.SameFile(ci, di) {
+			return true
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return false
+		}
+		cur = parent
+	}
 }

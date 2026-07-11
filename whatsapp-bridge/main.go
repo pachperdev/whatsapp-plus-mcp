@@ -106,8 +106,9 @@ func main() {
 	}
 	defer func() { _ = messageStore.Close() }()
 
-	// Validador anti-exfiltracion de rutas de media (conoce el store para protegerlo).
-	validator := auth.NewValidator(cfg.StoreDir)
+	// Validador anti-exfiltracion de rutas de media: protege el store y, si se
+	// configuro WHATSAPP_MEDIA_ALLOWED_DIRS, confina los envios a esos directorios.
+	validator := auth.NewValidator(cfg.StoreDir, cfg.MediaAllowedDirs)
 
 	// Servicio con la lógica stateful de WhatsApp (estado en memoria inyectado, no global).
 	svc := wa.NewService(client, messageStore, logger, cfg.StoreDir, validator)
