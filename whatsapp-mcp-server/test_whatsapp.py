@@ -1,10 +1,49 @@
-"""Tests de las funciones puras de resolución de identidad de whatsapp.py.
+"""Tests de whatsapp.py: funciones puras de resolución de identidad y acceso a la
+base (con fixtures SQLite).
 
-No tocan la base ni el bridge: donde hace falta el índice de contactos se
-monkeypatchea _get_contact_index.
+No tocan el bridge ni la DB real: los paths se apuntan a temporales y donde hace
+falta el índice de contactos se monkeypatchea _get_contact_index.
 """
 
+import sqlite3
+
 import whatsapp
+
+
+def _make_messages_db(path: str) -> None:
+    """Crea una messages.db mínima con el esquema que consultan las lecturas."""
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE chats (
+            jid TEXT PRIMARY KEY,
+            name TEXT,
+            last_message_time TEXT
+        );
+        CREATE TABLE messages (
+            id TEXT,
+            chat_jid TEXT,
+            sender TEXT,
+            content TEXT,
+            timestamp TEXT,
+            is_from_me INTEGER,
+            media_type TEXT,
+            filename TEXT,
+            url TEXT,
+            direct_path TEXT,
+            media_key BLOB,
+            file_sha256 BLOB,
+            file_enc_sha256 BLOB,
+            file_length INTEGER,
+            PRIMARY KEY (id, chat_jid)
+        );
+        INSERT INTO chats (jid, name, last_message_time) VALUES
+            ('111@s.whatsapp.net', 'Ana', '2026-07-01 10:00:00'),
+            ('222@s.whatsapp.net', 'Beto', '2026-07-02 11:00:00');
+        """
+    )
+    conn.commit()
+    conn.close()
 
 
 class TestNormalizePhone:
@@ -61,3 +100,39 @@ class TestSiblingChatJids:
         siblings = set(whatsapp._sibling_chat_jids("5491122334455@s.whatsapp.net"))
         assert "5491122334455@s.whatsapp.net" in siblings
         assert "999@lid" in siblings
+
+
+class TestListChatsFixture:
+    def test_lista_los_chats(self, tmp_path, monkeypatch):
+        db = tmp_path / "messages.db"
+        _make_messages_db(str(db))
+        monkeypatch.setattr(whatsapp, "MESSAGES_DB_PATH", str(db))
+        monkeypatch.setattr(whatsapp, "_get_contact_index", lambda refresh=False: ({}, {}))
+
+        chats = whatsapp.list_chats()
+        jids = {c.jid for c in chats}
+        assert jids == {"111@s.whatsapp.net", "222@s.whatsapp.net"}
+
+
+class TestReadOnlyNoCreaDB:
+    """Regresión del fix mode=ro: un lector NUNCA debe crear la DB del bridge.
+
+    Antes, sqlite3.connect(path) en modo rwc creaba un archivo vacío si faltaba;
+    con mode=ro falla limpio y devuelve [] sin tocar el disco.
+    """
+
+    def test_list_messages_no_crea_db(self, tmp_path, monkeypatch):
+        missing = tmp_path / "no_existe.db"
+        monkeypatch.setattr(whatsapp, "MESSAGES_DB_PATH", str(missing))
+        monkeypatch.setattr(whatsapp, "_get_contact_index", lambda refresh=False: ({}, {}))
+
+        assert whatsapp.list_messages() == []
+        assert not missing.exists()
+
+    def test_list_chats_no_crea_db(self, tmp_path, monkeypatch):
+        missing = tmp_path / "no_existe.db"
+        monkeypatch.setattr(whatsapp, "MESSAGES_DB_PATH", str(missing))
+        monkeypatch.setattr(whatsapp, "_get_contact_index", lambda refresh=False: ({}, {}))
+
+        assert whatsapp.list_chats() == []
+        assert not missing.exists()

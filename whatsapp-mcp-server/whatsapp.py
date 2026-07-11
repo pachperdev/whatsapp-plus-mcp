@@ -30,12 +30,17 @@ REQUEST_TIMEOUT = (5, 30)
 # concurrente de tools del MCP. Reduce latencia por llamada y evita sockets en TIME_WAIT.
 _SESSION = requests.Session()
 
-MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
+# Config por variables de entorno con defaults = layout actual del repo. Permite
+# apuntar el server a otra ubicacion (tests, despliegue empaquetado, Claude Desktop)
+# sin tocar codigo. Los defaults preservan el comportamiento historico.
+_STORE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "whatsapp-bridge", "store")
+
+MESSAGES_DB_PATH = os.environ.get("WHATSAPP_MESSAGES_DB", os.path.join(_STORE_DIR, "messages.db"))
 # whatsmeow guarda la libreta de contactos y el mapeo lid<->numero aqui
-WHATSAPP_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'whatsapp.db')
-WHATSAPP_API_BASE_URL = "http://localhost:8080/api"
+WHATSAPP_DB_PATH = os.environ.get("WHATSAPP_SESSION_DB", os.path.join(_STORE_DIR, "whatsapp.db"))
+WHATSAPP_API_BASE_URL = os.environ.get("WHATSAPP_BRIDGE_URL", "http://localhost:8080/api")
 # Token de auth compartido con el bridge (el bridge lo genera en store/.bridge_token).
-BRIDGE_TOKEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', '.bridge_token')
+BRIDGE_TOKEN_PATH = os.environ.get("WHATSAPP_BRIDGE_TOKEN_FILE", os.path.join(_STORE_DIR, ".bridge_token"))
 
 
 def _bridge_token() -> str:
@@ -132,6 +137,12 @@ def _load_contact_index():
     saved = set()
     try:
         conn = sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True)
+    except sqlite3.Error as e:
+        logger.error(f"Database error loading contacts: {e}")
+        return names, lid_to_pn, saved
+    # finally garantiza el cierre aunque una excepcion escape (antes conn.close()
+    # vivia dentro del try y se saltaba ante error -> fuga de conexion).
+    try:
         cursor = conn.cursor()
         try:
             for their_jid, first_name, full_name, push_name, business_name in cursor.execute(
@@ -153,9 +164,8 @@ def _load_contact_index():
                 lid_to_pn[_normalize_phone(str(lid))] = _normalize_phone(str(pn))
         except sqlite3.Error:
             pass
+    finally:
         conn.close()
-    except sqlite3.Error as e:
-        logger.error(f"Database error loading contacts: {e}")
     return names, lid_to_pn, saved
 
 
@@ -273,7 +283,7 @@ def get_sender_name(sender_jid: str) -> str:
     # 2) Fallback: nombre guardado en la tabla chats de messages.db
     conn = None
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM chats WHERE jid = ? LIMIT 1", (sender_jid,))
         result = cursor.fetchone()
@@ -357,7 +367,7 @@ def list_messages(
     """Get messages matching the specified criteria with optional context."""
     conn = None
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
         cursor = conn.cursor()
 
         # Build base query
@@ -461,7 +471,7 @@ def get_message_context(
     """Get context around a specific message."""
     conn = None
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
         cursor = conn.cursor()
 
         # Get the target message first
@@ -557,7 +567,7 @@ def list_chats(
     """Get chats matching the specified criteria."""
     conn = None
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
         cursor = conn.cursor()
         
         # Build base query
@@ -646,52 +656,58 @@ def search_contacts(query: str) -> List[Contact]:
         pn = _normalize_phone(jid_or_local)
         return lid_to_pn.get(pn, pn)  # si es un lid, mapearlo a su numero real
 
-    # 1) Libreta real de WhatsApp (la fuente con todos los contactos guardados)
+    # 1) Libreta real de WhatsApp (la fuente con todos los contactos guardados).
+    # finally garantiza el cierre: antes conn.close() vivia dentro del try y se
+    # saltaba ante un sqlite3.Error -> fuga de conexion.
     try:
         conn = sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True, timeout=10)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT their_jid, first_name, full_name, push_name, business_name
-            FROM whatsmeow_contacts
-            WHERE LOWER(full_name) LIKE ? OR LOWER(first_name) LIKE ?
-               OR LOWER(push_name) LIKE ? OR LOWER(business_name) LIKE ?
-               OR their_jid LIKE ?
-            """,
-            (search, search, search, search, search),
-        )
-        for their_jid, first_name, full_name, push_name, business_name in cursor.fetchall():
-            pn = _canon_pn(their_jid)
-            if pn and pn not in results:
-                # preferir el nombre canonico de la libreta (por numero)
-                name = names_idx.get(pn) or (full_name or first_name or push_name or business_name or "").strip()
-                results[pn] = Contact(
-                    phone_number=pn,
-                    name=name or None,
-                    jid=f"{pn}@s.whatsapp.net",
-                )
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT their_jid, first_name, full_name, push_name, business_name
+                FROM whatsmeow_contacts
+                WHERE LOWER(full_name) LIKE ? OR LOWER(first_name) LIKE ?
+                   OR LOWER(push_name) LIKE ? OR LOWER(business_name) LIKE ?
+                   OR their_jid LIKE ?
+                """,
+                (search, search, search, search, search),
+            )
+            for their_jid, first_name, full_name, push_name, business_name in cursor.fetchall():
+                pn = _canon_pn(their_jid)
+                if pn and pn not in results:
+                    # preferir el nombre canonico de la libreta (por numero)
+                    name = names_idx.get(pn) or (full_name or first_name or push_name or business_name or "").strip()
+                    results[pn] = Contact(
+                        phone_number=pn,
+                        name=name or None,
+                        jid=f"{pn}@s.whatsapp.net",
+                    )
+        finally:
+            conn.close()
     except sqlite3.Error as e:
         logger.error(f"Database error searching contacts: {e}")
 
     # 2) Complementar con chats (cubre nombres que solo existen ahi)
     try:
         conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT DISTINCT jid, name FROM chats
-            WHERE (LOWER(name) LIKE ? OR LOWER(jid) LIKE ?) AND jid NOT LIKE '%@g.us'
-            LIMIT 50
-            """,
-            (search, search),
-        )
-        for jid, name in cursor.fetchall():
-            pn = _canon_pn(jid)
-            if pn not in results:
-                resolved = names_idx.get(pn) or resolve_contact_name(jid) or name
-                results[pn] = Contact(phone_number=pn, name=resolved, jid=jid)
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT DISTINCT jid, name FROM chats
+                WHERE (LOWER(name) LIKE ? OR LOWER(jid) LIKE ?) AND jid NOT LIKE '%@g.us'
+                LIMIT 50
+                """,
+                (search, search),
+            )
+            for jid, name in cursor.fetchall():
+                pn = _canon_pn(jid)
+                if pn not in results:
+                    resolved = names_idx.get(pn) or resolve_contact_name(jid) or name
+                    results[pn] = Contact(phone_number=pn, name=resolved, jid=jid)
+        finally:
+            conn.close()
     except sqlite3.Error as e:
         logger.error(f"Database error searching chats: {e}")
 
@@ -708,7 +724,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
     """
     conn = None
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
         cursor = conn.cursor()
 
         cursor.execute("""
@@ -755,7 +771,7 @@ def get_last_interaction(jid: str) -> Optional[str]:
     """Get most recent message involving the contact."""
     conn = None
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -805,7 +821,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
     """Get chat metadata by JID."""
     conn = None
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
         cursor = conn.cursor()
         
         query = """
