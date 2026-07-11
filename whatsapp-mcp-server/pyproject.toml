@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-py-modules = ["main", "whatsapp", "audio"]
+packages = ["whatsapp_mcp"]
 
 [dependency-groups]
 dev = [

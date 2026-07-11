@@ -1,4 +1,4 @@
-"""Tests de whatsapp.py: funciones puras de resolución de identidad y acceso a la
+"""Tests de whatsapp_mcp.db: funciones puras de resolución de identidad y acceso a la
 base (con fixtures SQLite).
 
 No tocan el bridge ni la DB real: los paths se apuntan a temporales y donde hace
@@ -7,7 +7,7 @@ falta el índice de contactos se monkeypatchea _get_contact_index.
 
 import sqlite3
 
-import whatsapp
+from whatsapp_mcp import db
 
 
 def _make_messages_db(path: str) -> None:
@@ -48,68 +48,68 @@ def _make_messages_db(path: str) -> None:
 
 class TestNormalizePhone:
     def test_quita_sufijo(self):
-        assert whatsapp._normalize_phone("5491122334455@s.whatsapp.net") == "5491122334455"
+        assert db._normalize_phone("5491122334455@s.whatsapp.net") == "5491122334455"
 
     def test_quita_device_id(self):
-        assert whatsapp._normalize_phone("5491122334455:12@s.whatsapp.net") == "5491122334455"
+        assert db._normalize_phone("5491122334455:12@s.whatsapp.net") == "5491122334455"
 
     def test_lid(self):
-        assert whatsapp._normalize_phone("12345@lid") == "12345"
+        assert db._normalize_phone("12345@lid") == "12345"
 
     def test_vacio(self):
-        assert whatsapp._normalize_phone("") == ""
+        assert db._normalize_phone("") == ""
 
     def test_solo_numero(self):
-        assert whatsapp._normalize_phone("5491122334455") == "5491122334455"
+        assert db._normalize_phone("5491122334455") == "5491122334455"
 
 
 class TestCanonicalChatKey:
     def test_grupo_sin_cambios(self):
-        assert whatsapp._canonical_chat_key("123-456@g.us") == "123-456@g.us"
+        assert db._canonical_chat_key("123-456@g.us") == "123-456@g.us"
 
     def test_vacio(self):
-        assert whatsapp._canonical_chat_key("") == ""
+        assert db._canonical_chat_key("") == ""
 
     def test_lid_colapsa_a_numero(self, monkeypatch):
         monkeypatch.setattr(
-            whatsapp, "_get_contact_index", lambda refresh=False: ({}, {"999": "5491122334455"})
+            db, "_get_contact_index", lambda refresh=False: ({}, {"999": "5491122334455"})
         )
-        assert whatsapp._canonical_chat_key("999@lid") == "5491122334455"
+        assert db._canonical_chat_key("999@lid") == "5491122334455"
 
     def test_numero_directo(self, monkeypatch):
-        monkeypatch.setattr(whatsapp, "_get_contact_index", lambda refresh=False: ({}, {}))
-        assert whatsapp._canonical_chat_key("5491122334455@s.whatsapp.net") == "5491122334455"
+        monkeypatch.setattr(db, "_get_contact_index", lambda refresh=False: ({}, {}))
+        assert db._canonical_chat_key("5491122334455@s.whatsapp.net") == "5491122334455"
 
 
 class TestSiblingChatJids:
     def test_grupo_solo_su_jid(self):
-        assert whatsapp._sibling_chat_jids("123-456@g.us") == ["123-456@g.us"]
+        assert db._sibling_chat_jids("123-456@g.us") == ["123-456@g.us"]
 
     def test_lid_agrega_numero(self, monkeypatch):
         monkeypatch.setattr(
-            whatsapp, "_get_contact_index", lambda refresh=False: ({}, {"999": "5491122334455"})
+            db, "_get_contact_index", lambda refresh=False: ({}, {"999": "5491122334455"})
         )
-        siblings = set(whatsapp._sibling_chat_jids("999@lid"))
+        siblings = set(db._sibling_chat_jids("999@lid"))
         assert "999@lid" in siblings
         assert "5491122334455@s.whatsapp.net" in siblings
 
     def test_numero_agrega_lid(self, monkeypatch):
         monkeypatch.setattr(
-            whatsapp, "_get_contact_index", lambda refresh=False: ({}, {"999": "5491122334455"})
+            db, "_get_contact_index", lambda refresh=False: ({}, {"999": "5491122334455"})
         )
-        siblings = set(whatsapp._sibling_chat_jids("5491122334455@s.whatsapp.net"))
+        siblings = set(db._sibling_chat_jids("5491122334455@s.whatsapp.net"))
         assert "5491122334455@s.whatsapp.net" in siblings
         assert "999@lid" in siblings
 
 
 class TestListChatsFixture:
     def test_lista_los_chats(self, tmp_path, monkeypatch):
-        db = tmp_path / "messages.db"
-        _make_messages_db(str(db))
-        monkeypatch.setattr(whatsapp, "MESSAGES_DB_PATH", str(db))
-        monkeypatch.setattr(whatsapp, "_get_contact_index", lambda refresh=False: ({}, {}))
+        dbfile = tmp_path / "messages.db"
+        _make_messages_db(str(dbfile))
+        monkeypatch.setattr(db, "MESSAGES_DB_PATH", str(dbfile))
+        monkeypatch.setattr(db, "_get_contact_index", lambda refresh=False: ({}, {}))
 
-        chats = whatsapp.list_chats()
+        chats = db.list_chats()
         jids = {c.jid for c in chats}
         assert jids == {"111@s.whatsapp.net", "222@s.whatsapp.net"}
 
@@ -123,16 +123,16 @@ class TestReadOnlyNoCreaDB:
 
     def test_list_messages_no_crea_db(self, tmp_path, monkeypatch):
         missing = tmp_path / "no_existe.db"
-        monkeypatch.setattr(whatsapp, "MESSAGES_DB_PATH", str(missing))
-        monkeypatch.setattr(whatsapp, "_get_contact_index", lambda refresh=False: ({}, {}))
+        monkeypatch.setattr(db, "MESSAGES_DB_PATH", str(missing))
+        monkeypatch.setattr(db, "_get_contact_index", lambda refresh=False: ({}, {}))
 
-        assert whatsapp.list_messages() == []
+        assert db.list_messages() == []
         assert not missing.exists()
 
     def test_list_chats_no_crea_db(self, tmp_path, monkeypatch):
         missing = tmp_path / "no_existe.db"
-        monkeypatch.setattr(whatsapp, "MESSAGES_DB_PATH", str(missing))
-        monkeypatch.setattr(whatsapp, "_get_contact_index", lambda refresh=False: ({}, {}))
+        monkeypatch.setattr(db, "MESSAGES_DB_PATH", str(missing))
+        monkeypatch.setattr(db, "_get_contact_index", lambda refresh=False: ({}, {}))
 
-        assert whatsapp.list_chats() == []
+        assert db.list_chats() == []
         assert not missing.exists()
