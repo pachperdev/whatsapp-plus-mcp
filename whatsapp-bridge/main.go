@@ -1876,9 +1876,12 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			http.Error(w, "Message ID and Chat JID are required", http.StatusBadRequest)
 			return
 		}
-		// Validar el JID (como el resto de handlers): ademas de correctitud, evita que
-		// un chat_jid tipo "../../x" arme un directorio fuera de store/ (path traversal).
-		if _, err := types.ParseJID(req.ChatJID); err != nil {
+		// Validar el JID. Ojo: types.ParseJID es permisivo -> un string SIN "@"
+		// (ej. "../../x") no da error, lo toma como user con server por defecto.
+		// Por eso exigimos ademas la "@": rechaza basura con un 400 limpio en vez de
+		// un 500 confuso. La proteccion REAL anti-traversal es el saneo de separadores
+		// en downloadMedia (un chat_jid valido igual no puede escapar de store/).
+		if _, err := types.ParseJID(req.ChatJID); err != nil || !strings.Contains(req.ChatJID, "@") {
 			http.Error(w, "Invalid chat_jid", http.StatusBadRequest)
 			return
 		}
