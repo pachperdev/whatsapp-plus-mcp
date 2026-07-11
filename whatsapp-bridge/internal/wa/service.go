@@ -388,12 +388,15 @@ func (s *Service) SendMessage(recipient string, message string, mediaPath string
 
 	// Check if we have media to send
 	if mediaPath != "" {
-		// Sandbox: evitar exfiltracion de archivos sensibles via media_path
-		if err := auth.ValidateMediaPath(mediaPath); err != nil {
+		// Sandbox: evitar exfiltracion de archivos sensibles via media_path.
+		// Se lee de la ruta canonica devuelta (no del string original) para no
+		// reabrir un path que pudo cambiar entre la validacion y la lectura.
+		resolvedPath, err := auth.ValidateMediaPath(mediaPath)
+		if err != nil {
 			return false, fmt.Sprintf("media path rejected: %v", err)
 		}
 		// Read media file
-		mediaData, err := os.ReadFile(mediaPath)
+		mediaData, err := os.ReadFile(resolvedPath)
 		if err != nil {
 			return false, fmt.Sprintf("Error reading media file: %v", err)
 		}

@@ -1238,12 +1238,15 @@ func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore
 		}
 		// Misma proteccion que el envio de media: sin esto un caller podria leer
 		// cualquier archivo del disco (incluida la sesion en store/) y subirlo.
-		if err := auth.ValidateMediaPath(req.ImagePath); err != nil {
+		// Se lee de la ruta canonica validada (no del string original) para cerrar
+		// la ventana TOCTOU entre la validacion y la lectura.
+		resolvedImage, err := auth.ValidateMediaPath(req.ImagePath)
+		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			writeJSON(w, map[string]interface{}{"success": false, "message": fmt.Sprintf("invalid image_path: %v", err)})
 			return
 		}
-		avatar, err := os.ReadFile(req.ImagePath)
+		avatar, err := os.ReadFile(resolvedImage)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			writeJSON(w, map[string]interface{}{"success": false, "message": fmt.Sprintf("cannot read image: %v", err)})
