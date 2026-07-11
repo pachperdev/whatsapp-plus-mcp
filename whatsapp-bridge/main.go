@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"syscall"
 	"time"
@@ -22,6 +23,7 @@ import (
 
 	"whatsapp-client/internal/api"
 	"whatsapp-client/internal/auth"
+	"whatsapp-client/internal/config"
 	"whatsapp-client/internal/store"
 	"whatsapp-client/internal/wa"
 )
@@ -46,16 +48,26 @@ func main() {
 	logger := waLog.Stdout("Client", "INFO", true)
 	logger.Infof("Starting WhatsApp client...")
 
+	// Config resuelta una sola vez (env con defaults = layout historico). Todos los
+	// paths quedan absolutos: el bridge deja de depender del CWD del proceso.
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Errorf("Config invalida: %v", err)
+		return
+	}
+
 	// Create database connection for storing session data
 	dbLog := waLog.Stdout("Database", "INFO", true)
 
 	// Create directory for database if it doesn't exist
-	if err := os.MkdirAll("store", 0755); err != nil {
+	if err := os.MkdirAll(cfg.StoreDir, 0755); err != nil {
 		logger.Errorf("Failed to create store directory: %v", err)
 		return
 	}
 
-	container, err := sqlstore.New(context.Background(), "sqlite", "file:store/whatsapp.db?_pragma=foreign_keys(on)&_pragma=busy_timeout(5000)", dbLog)
+	// ToSlash: el DSN file: usa '/' en todas las plataformas.
+	sessionDBPath := filepath.ToSlash(filepath.Join(cfg.StoreDir, "whatsapp.db"))
+	container, err := sqlstore.New(context.Background(), "sqlite", "file:"+sessionDBPath+"?_pragma=foreign_keys(on)&_pragma=busy_timeout(5000)", dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		return
@@ -87,15 +99,18 @@ func main() {
 	client.EmitAppStateEventsOnFullSync = false
 
 	// Initialize message store
-	messageStore, err := store.NewMessageStore()
+	messageStore, err := store.NewMessageStore(cfg.StoreDir)
 	if err != nil {
 		logger.Errorf("Failed to initialize message store: %v", err)
 		return
 	}
 	defer func() { _ = messageStore.Close() }()
 
+	// Validador anti-exfiltracion de rutas de media (conoce el store para protegerlo).
+	validator := auth.NewValidator(cfg.StoreDir)
+
 	// Servicio con la lógica stateful de WhatsApp (estado en memoria inyectado, no global).
-	svc := wa.NewService(client, messageStore, logger)
+	svc := wa.NewService(client, messageStore, logger, cfg.StoreDir, validator)
 
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
@@ -220,14 +235,15 @@ func main() {
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
 
 	// Start REST API server
-	token, tokErr := auth.GetOrCreateBridgeToken()
+	token, tokErr := auth.GetOrCreateBridgeToken(cfg.StoreDir)
 	if tokErr != nil {
 		fmt.Printf("WARNING: could not set up auth token: %v\n", tokErr)
 	}
 	handler := api.NewServer(svc, client, messageStore, token)
 
-	// Bind SOLO a loopback (no exponer a la LAN) + timeouts (anti cliente lento/DoS).
-	serverAddr := fmt.Sprintf("127.0.0.1:%d", 8080)
+	// Bind SOLO a loopback (config.Load ya valido que cfg.Addr no se exponga a la red)
+	// + timeouts (anti cliente lento/DoS).
+	serverAddr := cfg.Addr
 	srv := &http.Server{
 		Addr:         serverAddr,
 		Handler:      handler,

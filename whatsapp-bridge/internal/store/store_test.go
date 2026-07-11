@@ -5,12 +5,11 @@ import (
 	"time"
 )
 
-// newTestStore crea un MessageStore sobre una DB temporal (NewMessageStore usa
-// "store/messages.db" relativo al cwd, así que aislamos con t.Chdir).
+// newTestStore crea un MessageStore sobre una DB temporal (el storeDir se inyecta,
+// así que apuntamos a un directorio temporal aislado por test).
 func newTestStore(t *testing.T) *MessageStore {
 	t.Helper()
-	t.Chdir(t.TempDir())
-	s, err := NewMessageStore()
+	s, err := NewMessageStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewMessageStore: %v", err)
 	}

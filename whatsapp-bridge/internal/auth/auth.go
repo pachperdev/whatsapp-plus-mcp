@@ -1,7 +1,7 @@
 // Package auth agrupa las utilidades de seguridad del bridge: el token de
 // autenticación compartido con el server MCP y la validación de rutas de media
-// para prevenir exfiltración de archivos. Ambas resuelven paths relativos al
-// directorio store/ del proceso (igual que el resto del bridge).
+// para prevenir exfiltración de archivos. El directorio del store se inyecta desde
+// la config (ya absoluto), en vez de resolverse contra el CWD del proceso.
 package auth
 
 import (
@@ -14,12 +14,15 @@ import (
 )
 
 // GetOrCreateBridgeToken devuelve un token compartido entre el bridge y el MCP server.
-// Se persiste en store/.bridge_token (0600); el server Python lo lee del mismo archivo.
-// Asi la auth es automatica (sin config manual) y protege ante otros procesos locales.
-func GetOrCreateBridgeToken() (string, error) {
-	path := filepath.Join("store", ".bridge_token")
+// Se persiste en <storeDir>/.bridge_token (0600); el server Python lo lee del mismo
+// archivo. Asi la auth es automatica (sin config manual) y protege ante otros
+// procesos locales. Al reusar un token existente re-aplica 0600 (best-effort) por si
+// un fallo previo dejo el archivo con permisos laxos.
+func GetOrCreateBridgeToken(storeDir string) (string, error) {
+	path := filepath.Join(storeDir, ".bridge_token")
 	if data, err := os.ReadFile(path); err == nil {
 		if tok := strings.TrimSpace(string(data)); tok != "" {
+			_ = os.Chmod(path, 0600)
 			return tok, nil
 		}
 	}
@@ -34,13 +37,24 @@ func GetOrCreateBridgeToken() (string, error) {
 	return tok, nil
 }
 
-// ValidateMediaPath protege contra exfiltracion de archivos: resuelve symlinks,
-// rechaza componentes ocultos (donde viven secretos: ~/.ssh, ~/.aws, ~/.gnupg...),
-// rechaza los archivos del store del bridge (sesion whatsapp.db, historial
-// messages.db, token) y exige que sea un archivo regular existente. Devuelve la
-// ruta canonica (sin symlinks) para que el caller lea de ESA ruta y no del string
-// original, cerrando la ventana TOCTOU entre la validacion y la lectura.
-func ValidateMediaPath(p string) (string, error) {
+// Validator valida rutas de media contra exfiltracion. Conoce el directorio del
+// store para proteger la sesion/historial/token que viven ahi.
+type Validator struct {
+	storeDir string
+}
+
+// NewValidator crea un Validator. storeDir debe ser absoluto.
+func NewValidator(storeDir string) *Validator {
+	return &Validator{storeDir: storeDir}
+}
+
+// Validate protege contra exfiltracion de archivos: resuelve symlinks, rechaza
+// componentes ocultos (donde viven secretos: ~/.ssh, ~/.aws, ~/.gnupg...), rechaza
+// los archivos del store del bridge (sesion whatsapp.db, historial messages.db,
+// token) y exige un archivo regular existente. Devuelve la ruta canonica (sin
+// symlinks) para que el caller lea de ESA ruta y no del string original, cerrando
+// la ventana TOCTOU entre la validacion y la lectura.
+func (v *Validator) Validate(p string) (string, error) {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return "", fmt.Errorf("invalid path: %v", err)
@@ -61,7 +75,7 @@ func ValidateMediaPath(p string) (string, error) {
 	if !fi.Mode().IsRegular() {
 		return "", fmt.Errorf("not a regular file")
 	}
-	if err := rejectStorePaths(resolved, fi); err != nil {
+	if err := v.rejectStorePaths(resolved, fi); err != nil {
 		return "", err
 	}
 	return resolved, nil
@@ -74,19 +88,16 @@ func ValidateMediaPath(p string) (string, error) {
 // "STORE/whatsapp.db" apunta al MISMO archivo que "store/whatsapp.db" pero un
 // prefijo case-sensitive no lo detectaba (bypass de exfiltracion); y un hardlink
 // fuera de store/ comparte inode con el original. Ambos vectores se cierran aca.
-func rejectStorePaths(resolved string, fi os.FileInfo) error {
-	storeDir, err := filepath.Abs("store")
-	if err != nil {
-		return nil // sin store resoluble no hay nada que proteger
-	}
-	if real, err2 := filepath.EvalSymlinks(storeDir); err2 == nil {
+func (v *Validator) rejectStorePaths(resolved string, fi os.FileInfo) error {
+	storeDir := v.storeDir
+	if real, err := filepath.EvalSymlinks(storeDir); err == nil {
 		storeDir = real
 	}
 	// (a) rechaza si algun ancestro de resolved ES el directorio store/
 	// (case-insensitive-safe: comparar inodes ignora el casing del path).
-	if di, err2 := os.Stat(storeDir); err2 == nil {
+	if di, err := os.Stat(storeDir); err == nil {
 		for cur := filepath.Dir(resolved); ; {
-			if ci, err3 := os.Stat(cur); err3 == nil && os.SameFile(ci, di) {
+			if ci, err2 := os.Stat(cur); err2 == nil && os.SameFile(ci, di) {
 				return fmt.Errorf("path inside store directory not allowed")
 			}
 			parent := filepath.Dir(cur)
@@ -99,7 +110,7 @@ func rejectStorePaths(resolved string, fi os.FileInfo) error {
 	// (b) rechaza si resolved es un hardlink a un archivo sensible del store
 	// (mismo inode, otro path fuera de store/).
 	for _, name := range []string{"whatsapp.db", "messages.db", ".bridge_token"} {
-		if si, err2 := os.Stat(filepath.Join(storeDir, name)); err2 == nil && os.SameFile(fi, si) {
+		if si, err := os.Stat(filepath.Join(storeDir, name)); err == nil && os.SameFile(fi, si) {
 			return fmt.Errorf("path aliases a protected store file")
 		}
 	}

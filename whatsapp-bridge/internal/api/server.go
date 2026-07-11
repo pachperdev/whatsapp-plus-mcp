@@ -17,7 +17,6 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
 
-	"whatsapp-client/internal/auth"
 	"whatsapp-client/internal/store"
 	"whatsapp-client/internal/wa"
 )
@@ -1269,7 +1268,7 @@ func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore
 		// cualquier archivo del disco (incluida la sesion en store/) y subirlo.
 		// Se lee de la ruta canonica validada (no del string original) para cerrar
 		// la ventana TOCTOU entre la validacion y la lectura.
-		resolvedImage, err := auth.ValidateMediaPath(req.ImagePath)
+		resolvedImage, err := svc.ValidateMediaPath(req.ImagePath)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			writeJSON(w, map[string]interface{}{"success": false, "message": fmt.Sprintf("invalid image_path: %v", err)})

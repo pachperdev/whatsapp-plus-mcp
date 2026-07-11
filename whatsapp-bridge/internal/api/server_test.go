@@ -73,7 +73,7 @@ func TestWithAuth_WrongToken_Unauthorized(t *testing.T) {
 // pasan por svc.SendMessage (react/edit/revoke/poll/poll_vote): sin ban NO
 // bloquea; con ban temporal vigente responde 503 y corta.
 func TestBanBlocked(t *testing.T) {
-	svc := wa.NewService(nil, nil, nil)
+	svc := wa.NewService(nil, nil, nil, "", nil)
 
 	rec := httptest.NewRecorder()
 	if banBlocked(rec, svc) {

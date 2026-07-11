@@ -12,6 +12,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	// Registra el driver "sqlite" (modernc, sin CGO) para sql.Open.
@@ -41,9 +42,11 @@ func (store *MessageStore) DB() *sql.DB {
 }
 
 // NewMessageStore initializes the message store, opening/creating the SQLite DB.
-func NewMessageStore() (*MessageStore, error) {
+// NewMessageStore abre (creando si hace falta) la DB de mensajes en storeDir. El
+// directorio se inyecta desde la config (ya absoluto) para no depender del CWD.
+func NewMessageStore(storeDir string) (*MessageStore, error) {
 	// Create directory for database if it doesn't exist
-	if err := os.MkdirAll("store", 0755); err != nil {
+	if err := os.MkdirAll(storeDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create store directory: %v", err)
 	}
 
@@ -52,8 +55,10 @@ func NewMessageStore() (*MessageStore, error) {
 	//      sin bloquear, eliminando "database is locked" entre ambos procesos.
 	// busy_timeout: una escritura reintenta hasta 5s antes de fallar por lock.
 	// synchronous=NORMAL: seguro bajo WAL y mucho mas rapido que FULL.
+	// ToSlash: el DSN file: usa '/' en todas las plataformas (Windows incluido).
+	dbPath := filepath.ToSlash(filepath.Join(storeDir, "messages.db"))
 	db, err := sql.Open("sqlite",
-		"file:store/messages.db?_pragma=foreign_keys(on)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)")
+		"file:"+dbPath+"?_pragma=foreign_keys(on)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
 	}

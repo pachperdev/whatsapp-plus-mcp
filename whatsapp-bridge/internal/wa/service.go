@@ -40,17 +40,30 @@ type Service struct {
 	Store  *store.MessageStore
 	Log    waLog.Logger
 
+	storeDir  string          // directorio absoluto del store (media descargada, DBs)
+	validator *auth.Validator // validacion anti-exfiltracion de rutas de media
+
 	presence *presenceTracker // estado inyectado, NO global
 	status   *botStatus       // estado inyectado, NO global
 }
 
-// NewService arma un Service con el estado en memoria recién inicializado.
-func NewService(client *whatsmeow.Client, st *store.MessageStore, log waLog.Logger) *Service {
+// NewService arma un Service con el estado en memoria recién inicializado. storeDir
+// es el directorio del store (inyectado, absoluto); validator valida las rutas de
+// media salientes. Ambos pueden ser cero/nil en tests que no ejerciten media.
+func NewService(client *whatsmeow.Client, st *store.MessageStore, log waLog.Logger, storeDir string, validator *auth.Validator) *Service {
 	return &Service{
 		Client: client, Store: st, Log: log,
-		presence: &presenceTracker{states: make(map[string]PresenceInfo)},
-		status:   &botStatus{},
+		storeDir:  storeDir,
+		validator: validator,
+		presence:  &presenceTracker{states: make(map[string]PresenceInfo)},
+		status:    &botStatus{},
 	}
+}
+
+// ValidateMediaPath expone la validacion anti-exfiltracion del Service para los
+// handlers HTTP que leen archivos del disco (p. ej. set_group_photo).
+func (s *Service) ValidateMediaPath(p string) (string, error) {
+	return s.validator.Validate(p)
 }
 
 // PresenceInfo es el estado de presencia conocido de un contacto (online/last-seen/typing).
@@ -391,7 +404,7 @@ func (s *Service) SendMessage(recipient string, message string, mediaPath string
 		// Sandbox: evitar exfiltracion de archivos sensibles via media_path.
 		// Se lee de la ruta canonica devuelta (no del string original) para no
 		// reabrir un path que pudo cambiar entre la validacion y la lectura.
-		resolvedPath, err := auth.ValidateMediaPath(mediaPath)
+		resolvedPath, err := s.validator.Validate(mediaPath)
 		if err != nil {
 			return false, fmt.Sprintf("media path rejected: %v", err)
 		}
@@ -600,7 +613,7 @@ func (s *Service) DownloadMedia(messageID, chatJID string) (bool, string, string
 	// componente de directorio: ademas de ":" reemplazamos separadores de ruta para
 	// que no pueda escapar de store/ (defensa en profundidad; el handler ya valida el JID).
 	safeChat := strings.NewReplacer(":", "_", "/", "_", "\\", "_").Replace(chatJID)
-	chatDir := filepath.Join("store", safeChat)
+	chatDir := filepath.Join(s.storeDir, safeChat)
 	localPath := ""
 
 	// Get media info from the database
