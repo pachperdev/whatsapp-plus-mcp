@@ -11,7 +11,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -38,147 +37,15 @@ import (
 	"whatsapp-client/internal/auth"
 	"whatsapp-client/internal/media"
 	"whatsapp-client/internal/store"
+	"whatsapp-client/internal/wa"
 )
 
-// Message represents a chat message for our client
 // MessageStore y Message viven ahora en internal/store. Estos aliases transicionales
 // evitan reescribir las ~80 referencias existentes en este archivo mientras el resto
 // del bridge se modulariza; se pueden retirar cuando todo referencie store.* directo.
 type MessageStore = store.MessageStore
 
 type Message = store.Message
-
-// Extract text content from a message
-func extractTextContent(msg *waE2E.Message) string {
-	if msg == nil {
-		return ""
-	}
-
-	// Desenrollar wrappers (consistente con extractMediaInfo) para no perder el texto adentro.
-	if w := msg.GetEphemeralMessage(); w.GetMessage() != nil {
-		return extractTextContent(w.GetMessage())
-	}
-	if w := msg.GetViewOnceMessage(); w.GetMessage() != nil {
-		return extractTextContent(w.GetMessage())
-	}
-	if w := msg.GetDocumentWithCaptionMessage(); w.GetMessage() != nil {
-		return extractTextContent(w.GetMessage())
-	}
-
-	// Texto plano / extendido (con link preview)
-	if text := msg.GetConversation(); text != "" {
-		return text
-	}
-	if extendedText := msg.GetExtendedTextMessage(); extendedText != nil {
-		return extendedText.GetText()
-	}
-
-	// Captions de media: el texto que acompana imagen/video/documento (para leer/analizar).
-	if img := msg.GetImageMessage(); img != nil {
-		return img.GetCaption()
-	}
-	if vid := msg.GetVideoMessage(); vid != nil {
-		return vid.GetCaption()
-	}
-	if doc := msg.GetDocumentMessage(); doc != nil {
-		return doc.GetCaption()
-	}
-
-	// Encuesta: el texto legible es la pregunta.
-	if poll := msg.GetPollCreationMessage(); poll != nil {
-		return poll.GetName()
-	}
-
-	// Invitación a grupo (por mensaje de invitación, no link).
-	if inv := msg.GetGroupInviteMessage(); inv != nil {
-		name := inv.GetGroupName()
-		if name == "" {
-			name = inv.GetGroupJID()
-		}
-		return "📨 Invitación a grupo: " + name
-	}
-
-	// Ubicación: no hay archivo que descargar; guardamos coords + nombre/dirección legibles.
-	if loc := msg.GetLocationMessage(); loc != nil {
-		s := fmt.Sprintf("📍 Ubicación: %.6f, %.6f", loc.GetDegreesLatitude(), loc.GetDegreesLongitude())
-		if n := loc.GetName(); n != "" {
-			s += " — " + n
-		}
-		if a := loc.GetAddress(); a != "" {
-			s += " (" + a + ")"
-		}
-		return s
-	}
-	if live := msg.GetLiveLocationMessage(); live != nil {
-		s := fmt.Sprintf("📍 Ubicación en vivo: %.6f, %.6f", live.GetDegreesLatitude(), live.GetDegreesLongitude())
-		if c := live.GetCaption(); c != "" {
-			s += " — " + c
-		}
-		return s
-	}
-
-	// Contacto(s) compartido(s): guardamos nombre + teléfono (parseado del vCard).
-	if c := msg.GetContactMessage(); c != nil {
-		s := "👤 Contacto: " + c.GetDisplayName()
-		if p := vcardPhone(c.GetVcard()); p != "" {
-			s += " · " + p
-		}
-		return s
-	}
-	if ca := msg.GetContactsArrayMessage(); ca != nil {
-		names := make([]string, 0, len(ca.GetContacts()))
-		for _, c := range ca.GetContacts() {
-			n := c.GetDisplayName()
-			if p := vcardPhone(c.GetVcard()); p != "" {
-				n += " (" + p + ")"
-			}
-			names = append(names, n)
-		}
-		s := fmt.Sprintf("👤 %d contactos", len(ca.GetContacts()))
-		if len(names) > 0 {
-			s += ": " + strings.Join(names, ", ")
-		}
-		return s
-	}
-
-	return ""
-}
-
-// extractEditedText obtiene el texto nuevo de un edit descifrado. El plaintext puede venir
-// como contenido directo, anidado en ProtocolMessage.EditedMessage, o en un EditedMessage wrapper.
-func extractEditedText(m *waE2E.Message) string {
-	if m == nil {
-		return ""
-	}
-	if t := extractTextContent(m); t != "" {
-		return t
-	}
-	if pm := m.GetProtocolMessage(); pm != nil {
-		if t := extractTextContent(pm.GetEditedMessage()); t != "" {
-			return t
-		}
-	}
-	if em := m.GetEditedMessage().GetMessage(); em != nil {
-		return extractTextContent(em)
-	}
-	return ""
-}
-
-// vcardPhone extrae el primer teléfono (línea TEL) de un vCard. "" si no hay.
-func vcardPhone(vcard string) string {
-	if vcard == "" {
-		return ""
-	}
-	for _, line := range strings.Split(vcard, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(strings.ToUpper(line), "TEL") {
-			if i := strings.LastIndex(line, ":"); i >= 0 && i+1 < len(line) {
-				return strings.TrimSpace(line[i+1:])
-			}
-		}
-	}
-	return ""
-}
 
 // writeJSON serializa v como JSON en el ResponseWriter (el Content-Type y el status deben
 // fijarse antes de llamar). Si la codificación falla —normalmente porque el cliente cerró la
@@ -619,59 +486,6 @@ func buildQuotedContext(store *MessageStore, client *whatsmeow.Client, quotedID 
 	return ctxInfo
 }
 
-// Function to send a WhatsApp message
-// mentionRegex detecta menciones @<numero> (7-15 digitos) en el texto del mensaje.
-var mentionRegex = regexp.MustCompile(`@(\d{7,15})`)
-
-// resolveMentions arma la lista de JIDs mencionados a partir de menciones explicitas
-// (numeros o JIDs) y de auto-detectar @<numero> en el texto. Dedup conservando orden.
-func resolveMentions(text string, explicit []string) []string {
-	seen := map[string]bool{}
-	var jids []string
-	add := func(j string) {
-		if j != "" && !seen[j] {
-			seen[j] = true
-			jids = append(jids, j)
-		}
-	}
-	for _, m := range explicit {
-		m = strings.TrimSpace(m)
-		if m == "" {
-			continue
-		}
-		if strings.Contains(m, "@") {
-			add(m)
-		} else {
-			add(strings.TrimLeft(m, "+") + "@s.whatsapp.net")
-		}
-	}
-	for _, match := range mentionRegex.FindAllStringSubmatch(text, -1) {
-		add(match[1] + "@s.whatsapp.net")
-	}
-	return jids
-}
-
-// parseParticipantJIDs convierte una lista de numeros o JIDs a []types.JID
-// (un numero suelto se interpreta como <numero>@s.whatsapp.net).
-func parseParticipantJIDs(raw []string) ([]types.JID, error) {
-	var jids []types.JID
-	for _, r := range raw {
-		r = strings.TrimSpace(r)
-		if r == "" {
-			continue
-		}
-		if !strings.Contains(r, "@") {
-			r = strings.TrimLeft(r, "+") + "@s.whatsapp.net"
-		}
-		j, err := types.ParseJID(r)
-		if err != nil {
-			return nil, fmt.Errorf("invalid participant %q: %w", r, err)
-		}
-		jids = append(jids, j)
-	}
-	return jids, nil
-}
-
 // loadGroupInvite recupera de la DB los datos de una invitacion de grupo capturada
 // (media_type="group_invite"): group_jid/code/expiration del JSON en filename; inviter = sender.
 func loadGroupInvite(store *MessageStore, chatJID, msgID string) (groupJID types.JID, inviter types.JID, code string, expiration int64, err error) {
@@ -889,7 +703,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		if quotedMessageID != "" {
 			ctxInfo = buildQuotedContext(messageStore, client, quotedMessageID)
 		}
-		if mentionJIDs := resolveMentions(message, mentions); len(mentionJIDs) > 0 {
+		if mentionJIDs := wa.ResolveMentions(message, mentions); len(mentionJIDs) > 0 {
 			if ctxInfo == nil {
 				ctxInfo = &waE2E.ContextInfo{}
 			}
@@ -935,85 +749,6 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 	return true, fmt.Sprintf("Message sent to %s", recipient)
 }
 
-// Extract media info from a message
-func extractMediaInfo(msg *waE2E.Message) (mediaType string, filename string, url string, directPath string, mediaKey []byte, fileSHA256 []byte, fileEncSHA256 []byte, fileLength uint64) {
-	if msg == nil {
-		return "", "", "", "", nil, nil, nil, 0
-	}
-
-	// Desenrollar wrappers que envuelven el mensaje real; sin esto se pierde la media de
-	// dentro: mensajes temporales (ephemeral), ver-una-vez (view once) y documento+caption.
-	if w := msg.GetEphemeralMessage(); w.GetMessage() != nil {
-		return extractMediaInfo(w.GetMessage())
-	}
-	if w := msg.GetViewOnceMessage(); w.GetMessage() != nil {
-		return extractMediaInfo(w.GetMessage())
-	}
-	if w := msg.GetDocumentWithCaptionMessage(); w.GetMessage() != nil {
-		return extractMediaInfo(w.GetMessage())
-	}
-
-	// Check for image message
-	if img := msg.GetImageMessage(); img != nil {
-		return "image", "image_" + time.Now().Format("20060102_150405") + ".jpg",
-			img.GetURL(), img.GetDirectPath(), img.GetMediaKey(), img.GetFileSHA256(), img.GetFileEncSHA256(), img.GetFileLength()
-	}
-
-	// Check for video message
-	if vid := msg.GetVideoMessage(); vid != nil {
-		return "video", "video_" + time.Now().Format("20060102_150405") + ".mp4",
-			vid.GetURL(), vid.GetDirectPath(), vid.GetMediaKey(), vid.GetFileSHA256(), vid.GetFileEncSHA256(), vid.GetFileLength()
-	}
-
-	// Check for audio message
-	if aud := msg.GetAudioMessage(); aud != nil {
-		return "audio", "audio_" + time.Now().Format("20060102_150405") + ".ogg",
-			aud.GetURL(), aud.GetDirectPath(), aud.GetMediaKey(), aud.GetFileSHA256(), aud.GetFileEncSHA256(), aud.GetFileLength()
-	}
-
-	// Check for document message
-	if doc := msg.GetDocumentMessage(); doc != nil {
-		filename := doc.GetFileName()
-		if filename == "" {
-			filename = "document_" + time.Now().Format("20060102_150405")
-		}
-		return "document", filename,
-			doc.GetURL(), doc.GetDirectPath(), doc.GetMediaKey(), doc.GetFileSHA256(), doc.GetFileEncSHA256(), doc.GetFileLength()
-	}
-
-	// Check for sticker message (estaticos y animados; .webp). whatsmeow los descarga como imagen.
-	if stk := msg.GetStickerMessage(); stk != nil {
-		return "sticker", "sticker_" + time.Now().Format("20060102_150405") + ".webp",
-			stk.GetURL(), stk.GetDirectPath(), stk.GetMediaKey(), stk.GetFileSHA256(), stk.GetFileEncSHA256(), stk.GetFileLength()
-	}
-
-	// Encuesta: NO es media descargable, pero se persiste (media_type="poll"). Las opciones
-	// se guardan como JSON en el campo "filename" (no usado por polls) para poder mapear
-	// despues los votos entrantes (que llegan como hashes) a sus nombres legibles.
-	if poll := msg.GetPollCreationMessage(); poll != nil {
-		names := make([]string, 0, len(poll.GetOptions()))
-		for _, o := range poll.GetOptions() {
-			names = append(names, o.GetOptionName())
-		}
-		b, _ := json.Marshal(names)
-		return "poll", string(b), "", "", nil, nil, nil, 0
-	}
-
-	// Invitación a grupo: se persiste (media_type="group_invite") con los datos necesarios
-	// para unirse (group_jid/code/expiration) como JSON en "filename"; el inviter es el sender.
-	if inv := msg.GetGroupInviteMessage(); inv != nil {
-		data, _ := json.Marshal(map[string]interface{}{
-			"group_jid":  inv.GetGroupJID(),
-			"code":       inv.GetInviteCode(),
-			"expiration": inv.GetInviteExpiration(),
-			"group_name": inv.GetGroupName(),
-		})
-		return "group_invite", string(data), "", "", nil, nil, nil, 0
-	}
-
-	return "", "", "", "", nil, nil, nil, 0
-}
-
 // Handle regular incoming messages with media support
 func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *events.Message, logger waLog.Logger) {
 	// Save message to database
@@ -1045,7 +780,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 			targetID := sec.GetTargetMessageKey().GetID()
 			if decrypted, err := client.DecryptSecretEncryptedMessage(context.Background(), msg); err != nil {
 				logger.Warnf("Failed to decrypt edit for %s: %v", targetID, err)
-			} else if newText := extractEditedText(decrypted); targetID != "" && newText != "" {
+			} else if newText := wa.ExtractEditedText(decrypted); targetID != "" && newText != "" {
 				if n, err := messageStore.ApplyMessageEdit(targetID, chatJID, newText); err != nil {
 					logger.Warnf("Failed to apply edit for %s: %v", targetID, err)
 				} else if n > 0 {
@@ -1058,7 +793,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 
 	// Edit ya desenvuelto (history-sync/webMsg): IsEdit=true, msg.Info.ID = original.
 	if msg.IsEdit {
-		if newText := extractTextContent(msg.Message); newText != "" {
+		if newText := wa.ExtractTextContent(msg.Message); newText != "" {
 			if n, err := messageStore.ApplyMessageEdit(msg.Info.ID, chatJID, newText); err != nil {
 				logger.Warnf("Failed to apply edit for %s: %v", msg.Info.ID, err)
 				return
@@ -1082,10 +817,10 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	}
 
 	// Extract text content
-	content := extractTextContent(msg.Message)
+	content := wa.ExtractTextContent(msg.Message)
 
 	// Extract media info
-	mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(msg.Message)
+	mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength := wa.ExtractMediaInfo(msg.Message)
 
 	// Skip if there's no content and no media
 	if content == "" && mediaType == "" {
@@ -1224,7 +959,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	// Preferir el directPath NATIVO guardado (necesario para el formato nuevo mms3);
 	// reconstruirlo desde la URL solo como fallback para mensajes viejos sin direct_path.
 	if directPath == "" {
-		directPath = extractDirectPathFromURL(url)
+		directPath = wa.ExtractDirectPathFromURL(url)
 	}
 
 	// Create a downloader that implements DownloadableMessage
@@ -1268,26 +1003,6 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 
 	fmt.Printf("Successfully downloaded %s media to %s (%d bytes)\n", mediaType, absPath, len(mediaData))
 	return true, mediaType, filename, absPath, nil
-}
-
-// Extract direct path from a WhatsApp media URL
-func extractDirectPathFromURL(url string) string {
-	// The direct path is typically in the URL, we need to extract it
-	// Example URL: https://mmg.whatsapp.net/v/t62.7118-24/13812002_698058036224062_3424455886509161511_n.enc?ccb=11-4&oh=...
-
-	// Find the path part after the domain
-	parts := strings.SplitN(url, ".net/", 2)
-	if len(parts) < 2 {
-		return url // Return original URL if parsing fails
-	}
-
-	pathPart := parts[1]
-
-	// Remove query parameters
-	pathPart = strings.SplitN(pathPart, "?", 2)[0]
-
-	// Create proper direct path format
-	return "/" + pathPart
 }
 
 // goSafe corre fn en una goroutine con recover. Los handlers de eventos que corren
@@ -2264,7 +1979,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			writeJSON(w, map[string]interface{}{"success": false, "message": "group name max 25 chars"})
 			return
 		}
-		parts, err := parseParticipantJIDs(req.Participants)
+		parts, err := wa.ParseParticipantJIDs(req.Participants)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
@@ -2317,7 +2032,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			writeJSON(w, map[string]interface{}{"success": false, "message": "action must be add/remove/promote/demote"})
 			return
 		}
-		parts, err := parseParticipantJIDs(req.Participants)
+		parts, err := wa.ParseParticipantJIDs(req.Participants)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
@@ -2450,7 +2165,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid request"})
 			return
 		}
-		jids, err := parseParticipantJIDs(req.JIDs)
+		jids, err := wa.ParseParticipantJIDs(req.JIDs)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
@@ -2820,7 +2535,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			writeJSON(w, map[string]interface{}{"success": false, "message": "action must be approve/reject"})
 			return
 		}
-		parts, err := parseParticipantJIDs(req.Participants)
+		parts, err := wa.ParseParticipantJIDs(req.Participants)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			writeJSON(w, map[string]interface{}{"success": false, "message": err.Error()})
@@ -3357,7 +3072,7 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 				var fileLength uint64
 
 				if msg.Message.Message != nil {
-					mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength = extractMediaInfo(msg.Message.Message)
+					mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength = wa.ExtractMediaInfo(msg.Message.Message)
 				}
 
 				// Log the message content for debugging

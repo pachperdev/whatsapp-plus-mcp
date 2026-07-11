@@ -1,4 +1,4 @@
-package main
+package wa
 
 import (
 	"testing"
@@ -36,7 +36,7 @@ func TestExtractTextContent(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := extractTextContent(tc.msg); got != tc.want {
+			if got := ExtractTextContent(tc.msg); got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
@@ -65,26 +65,26 @@ func TestVcardPhone(t *testing.T) {
 
 func TestResolveMentions(t *testing.T) {
 	t.Run("número explícito a JID", func(t *testing.T) {
-		got := resolveMentions("", []string{"5491122334455"})
+		got := ResolveMentions("", []string{"5491122334455"})
 		want := []string{"5491122334455@s.whatsapp.net"}
 		if len(got) != 1 || got[0] != want[0] {
 			t.Errorf("got %v, want %v", got, want)
 		}
 	})
 	t.Run("auto-detección en texto", func(t *testing.T) {
-		got := resolveMentions("hola @5491122334455 qué tal", nil)
+		got := ResolveMentions("hola @5491122334455 qué tal", nil)
 		if len(got) != 1 || got[0] != "5491122334455@s.whatsapp.net" {
 			t.Errorf("got %v", got)
 		}
 	})
 	t.Run("dedup conservando orden", func(t *testing.T) {
-		got := resolveMentions("@5491122334455", []string{"5491122334455"})
+		got := ResolveMentions("@5491122334455", []string{"5491122334455"})
 		if len(got) != 1 {
 			t.Errorf("debería deduplicar, got %v", got)
 		}
 	})
 	t.Run("JID explícito pasa tal cual", func(t *testing.T) {
-		got := resolveMentions("", []string{"123-456@g.us"})
+		got := ResolveMentions("", []string{"123-456@g.us"})
 		if len(got) != 1 || got[0] != "123-456@g.us" {
 			t.Errorf("got %v", got)
 		}
@@ -93,7 +93,7 @@ func TestResolveMentions(t *testing.T) {
 
 func TestParseParticipantJIDs(t *testing.T) {
 	t.Run("número a JID", func(t *testing.T) {
-		jids, err := parseParticipantJIDs([]string{"5491122334455"})
+		jids, err := ParseParticipantJIDs([]string{"5491122334455"})
 		if err != nil {
 			t.Fatalf("no debería fallar: %v", err)
 		}
@@ -102,7 +102,7 @@ func TestParseParticipantJIDs(t *testing.T) {
 		}
 	})
 	t.Run("vacíos se saltan", func(t *testing.T) {
-		jids, err := parseParticipantJIDs([]string{"", "  ", "5491122334455"})
+		jids, err := ParseParticipantJIDs([]string{"", "  ", "5491122334455"})
 		if err != nil {
 			t.Fatalf("no debería fallar: %v", err)
 		}
@@ -110,4 +110,16 @@ func TestParseParticipantJIDs(t *testing.T) {
 			t.Errorf("los vacíos deberían saltarse, got %v", jids)
 		}
 	})
+}
+
+func TestExtractDirectPathFromURL(t *testing.T) {
+	url := "https://mmg.whatsapp.net/v/t62.7118-24/13812002_n.enc?ccb=11-4&oh=abc"
+	got := ExtractDirectPathFromURL(url)
+	if got != "/v/t62.7118-24/13812002_n.enc" {
+		t.Errorf("got %q", got)
+	}
+	// Sin ".net/": devuelve la URL original.
+	if got := ExtractDirectPathFromURL("no-url"); got != "no-url" {
+		t.Errorf("fallback got %q", got)
+	}
 }
