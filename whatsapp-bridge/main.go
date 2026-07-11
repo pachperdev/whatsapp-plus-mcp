@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	crand "crypto/rand"
 	"crypto/subtle"
 	"database/sql"
 	"database/sql/driver"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -38,6 +36,7 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 
+	"whatsapp-client/internal/auth"
 	"whatsapp-client/internal/media"
 )
 
@@ -1024,7 +1023,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 	// Check if we have media to send
 	if mediaPath != "" {
 		// Sandbox: evitar exfiltracion de archivos sensibles via media_path
-		if err := validateMediaPath(mediaPath); err != nil {
+		if err := auth.ValidateMediaPath(mediaPath); err != nil {
 			return false, fmt.Sprintf("media path rejected: %v", err)
 		}
 		// Read media file
@@ -1595,66 +1594,6 @@ func extractDirectPathFromURL(url string) string {
 	return "/" + pathPart
 }
 
-// getOrCreateBridgeToken devuelve un token compartido entre el bridge y el MCP server.
-// Se persiste en store/.bridge_token (0600); el server Python lo lee del mismo archivo.
-// Asi la auth es automatica (sin config manual) y protege ante otros procesos locales.
-func getOrCreateBridgeToken() (string, error) {
-	path := filepath.Join("store", ".bridge_token")
-	if data, err := os.ReadFile(path); err == nil {
-		if tok := strings.TrimSpace(string(data)); tok != "" {
-			return tok, nil
-		}
-	}
-	buf := make([]byte, 32)
-	if _, err := crand.Read(buf); err != nil {
-		return "", fmt.Errorf("failed to generate token: %v", err)
-	}
-	tok := hex.EncodeToString(buf)
-	if err := os.WriteFile(path, []byte(tok), 0600); err != nil {
-		return "", fmt.Errorf("failed to persist token: %v", err)
-	}
-	return tok, nil
-}
-
-// validateMediaPath protege contra exfiltracion de archivos: resuelve symlinks,
-// rechaza componentes ocultos (donde viven secretos: ~/.ssh, ~/.aws, ~/.gnupg...)
-// y exige que sea un archivo regular existente.
-func validateMediaPath(p string) error {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return fmt.Errorf("invalid path: %v", err)
-	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return fmt.Errorf("cannot resolve path: %v", err)
-	}
-	for _, part := range strings.Split(resolved, string(os.PathSeparator)) {
-		if len(part) > 1 && strings.HasPrefix(part, ".") {
-			return fmt.Errorf("hidden path component %q not allowed", part)
-		}
-	}
-	// Rechaza cualquier archivo dentro del directorio store/ del bridge: ahi viven
-	// la sesion de WhatsApp (whatsapp.db, con las claves), el historial completo
-	// (messages.db) y el token de auth. No empiezan con "." (no los cubre el check
-	// de arriba) y ninguna media legitima vive ahi.
-	if storeDir, err := filepath.Abs("store"); err == nil {
-		if real, err2 := filepath.EvalSymlinks(storeDir); err2 == nil {
-			storeDir = real
-		}
-		if resolved == storeDir || strings.HasPrefix(resolved, storeDir+string(os.PathSeparator)) {
-			return fmt.Errorf("path inside store directory not allowed")
-		}
-	}
-	fi, err := os.Stat(resolved)
-	if err != nil {
-		return fmt.Errorf("cannot stat file: %v", err)
-	}
-	if !fi.Mode().IsRegular() {
-		return fmt.Errorf("not a regular file")
-	}
-	return nil
-}
-
 // goSafe corre fn en una goroutine con recover. Los handlers de eventos que corren
 // en goroutine (handleHistorySync, handlePollVote, handleCallOffer) procesan protobufs
 // influidos por la red y viven FUERA del recover per-request de net/http: un panic ahi
@@ -1747,7 +1686,7 @@ func blockViaLID(client *whatsmeow.Client, jid types.JID, action events.Blocklis
 
 // Start a REST API server to expose the WhatsApp client functionality
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
-	token, tokErr := getOrCreateBridgeToken()
+	token, tokErr := auth.GetOrCreateBridgeToken()
 	if tokErr != nil {
 		fmt.Printf("WARNING: could not set up auth token: %v\n", tokErr)
 	}
@@ -2949,7 +2888,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		}
 		// Misma proteccion que el envio de media: sin esto un caller podria leer
 		// cualquier archivo del disco (incluida la sesion en store/) y subirlo.
-		if err := validateMediaPath(req.ImagePath); err != nil {
+		if err := auth.ValidateMediaPath(req.ImagePath); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			writeJSON(w, map[string]interface{}{"success": false, "message": fmt.Sprintf("invalid image_path: %v", err)})
 			return
