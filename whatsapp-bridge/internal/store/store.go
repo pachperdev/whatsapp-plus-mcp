@@ -341,3 +341,24 @@ func (store *MessageStore) GetMediaInfo(id, chatJID string) (string, string, str
 
 	return mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength, err
 }
+
+// MessageSender devuelve el sender crudo y is_from_me del primer mensaje con ese id.
+// Lo usa /api/star para reconstruir el target del app-state. Best-effort: si no hay
+// fila, devuelve sql.ErrNoRows y el caller decide (star cae al chat propio).
+func (store *MessageStore) MessageSender(id string) (senderRaw string, fromMe bool, err error) {
+	err = store.db.QueryRow(
+		"SELECT sender, is_from_me FROM messages WHERE id = ? LIMIT 1", id,
+	).Scan(&senderRaw, &fromMe)
+	return senderRaw, fromMe, err
+}
+
+// PollSender devuelve el sender crudo y is_from_me del poll (media_type='poll') con
+// ese id en ese chat. Lo usa /api/poll_vote para reconstruir el MessageInfo del poll
+// original; err != nil significa que el poll no fue capturado y no se puede votar.
+func (store *MessageStore) PollSender(id, chatJID string) (senderRaw string, fromMe bool, err error) {
+	err = store.db.QueryRow(
+		"SELECT sender, is_from_me FROM messages WHERE id = ? AND chat_jid = ? AND media_type = 'poll' LIMIT 1",
+		id, chatJID,
+	).Scan(&senderRaw, &fromMe)
+	return senderRaw, fromMe, err
+}

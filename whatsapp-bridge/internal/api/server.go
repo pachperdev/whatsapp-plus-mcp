@@ -841,9 +841,7 @@ func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore
 			writeJSON(w, map[string]interface{}{"success": false, "message": "invalid chat_jid"})
 			return
 		}
-		var senderRaw string
-		var fromMe bool
-		_ = st.DB().QueryRow("SELECT sender, is_from_me FROM messages WHERE id = ? LIMIT 1", req.MessageID).Scan(&senderRaw, &fromMe)
+		senderRaw, fromMe, _ := st.MessageSender(req.MessageID)
 		// BuildStar mapea sender==target -> "0" en el index, que es lo que WhatsApp
 		// espera en chats directos y para mensajes propios. Por eso el default es el
 		// propio chat (jid). Solo en grupos con mensaje de OTRO se usa el participante real.
@@ -1555,12 +1553,7 @@ func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore
 			return
 		}
 		// Reconstruir el MessageInfo del poll original desde la DB (debe haber sido capturado).
-		var senderRaw string
-		var fromMe bool
-		err = st.DB().QueryRow(
-			"SELECT sender, is_from_me FROM messages WHERE id = ? AND chat_jid = ? AND media_type = 'poll' LIMIT 1",
-			req.PollMessageID, req.ChatJID,
-		).Scan(&senderRaw, &fromMe)
+		senderRaw, fromMe, err := st.PollSender(req.PollMessageID, req.ChatJID)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			writeJSON(w, map[string]interface{}{"success": false, "message": "poll not found in DB (no fue capturado); no se puede votar"})
