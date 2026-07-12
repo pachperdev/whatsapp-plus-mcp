@@ -45,6 +45,53 @@ func withAuth(token string, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// isAppStateConflict detecta el rechazo 409/LTHash del servidor al subir un patch de
+// app state: ocurre cuando el estado local quedó desincronizado (típico tras un login
+// por QR fresco, donde el servidor va varias versiones por delante del estado vacío local).
+func isAppStateConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "mismatching LTHash") || strings.Contains(msg, `code="409"`)
+}
+
+// sendAppState sube un patch de app state con auto-recuperación en dos niveles ante un
+// conflicto (isAppStateConflict):
+//  1. resync completo de la colección (FetchAppState fullSync) y reintento;
+//  2. si el propio resync viene corrupto del servidor (LTHash inválido también en el
+//     snapshot), pide al teléfono primario una copia limpia de la colección
+//     (BuildAppStateRecoveryRequest vía SendPeerMessage). whatsmeow instala la respuesta
+//     automáticamente, así que se reintenta en un poll corto acotado por el timeout de
+//     lectura del cliente Python (30s).
+//
+// Cualquier otro error se devuelve tal cual.
+func sendAppState(client *whatsmeow.Client, patch appstate.PatchInfo) error {
+	ctx := context.Background()
+	err := client.SendAppState(ctx, patch)
+	if !isAppStateConflict(err) {
+		return err
+	}
+	ferr := client.FetchAppState(ctx, patch.Type, true, false)
+	if ferr == nil {
+		return client.SendAppState(ctx, patch)
+	}
+	// Resync corrupto: recovery fatal vía teléfono primario (respuesta asíncrona).
+	if _, perr := client.SendPeerMessage(ctx, whatsmeow.BuildAppStateRecoveryRequest(patch.Type)); perr != nil {
+		return fmt.Errorf("resync de app state %s fallido (%v) y no se pudo pedir recovery al teléfono primario: %v", patch.Type, ferr, perr)
+	}
+	for i := 0; i < 6; i++ {
+		time.Sleep(3 * time.Second)
+		if client.FetchAppState(ctx, patch.Type, false, false) != nil {
+			continue // la copia limpia del teléfono aún no llegó
+		}
+		if err = client.SendAppState(ctx, patch); err == nil || !isAppStateConflict(err) {
+			return err
+		}
+	}
+	return fmt.Errorf("app state %s en recuperación: se pidió una copia limpia al teléfono primario (debe estar online); reintentá la operación en unos segundos (error original: %v)", patch.Type, err)
+}
+
 // banBlocked responde 503 y devuelve true si hay un ban temporal vigente. Los
 // envios salientes que NO pasan por svc.SendMessage (react/edit/revoke/poll/
 // poll_vote usan client.SendMessage directo con Build*) deben chequearlo igual:
@@ -709,7 +756,7 @@ func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore
 		if !ok {
 			return
 		}
-		if err := client.SendAppState(context.Background(), appstate.BuildMute(jid, req.Enable, time.Duration(req.Duration)*time.Hour)); err != nil {
+		if err := sendAppState(client, appstate.BuildMute(jid, req.Enable, time.Duration(req.Duration)*time.Hour)); err != nil {
 			respondErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -727,7 +774,7 @@ func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore
 		if !ok {
 			return
 		}
-		if err := client.SendAppState(context.Background(), appstate.BuildPin(jid, req.Enable)); err != nil {
+		if err := sendAppState(client, appstate.BuildPin(jid, req.Enable)); err != nil {
 			respondErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -746,7 +793,7 @@ func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore
 			return
 		}
 		key, ts := svc.LastMsgKey(jid)
-		if err := client.SendAppState(context.Background(), appstate.BuildArchive(jid, req.Enable, ts, key)); err != nil {
+		if err := sendAppState(client, appstate.BuildArchive(jid, req.Enable, ts, key)); err != nil {
 			respondErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -765,7 +812,7 @@ func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore
 			return
 		}
 		key, ts := svc.LastMsgKey(jid)
-		if err := client.SendAppState(context.Background(), appstate.BuildMarkChatAsRead(jid, req.Enable, ts, key)); err != nil {
+		if err := sendAppState(client, appstate.BuildMarkChatAsRead(jid, req.Enable, ts, key)); err != nil {
 			respondErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -797,7 +844,7 @@ func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore
 				senderJID = types.NewJID(senderRaw, types.HiddenUserServer)
 			}
 		}
-		if err := client.SendAppState(context.Background(), appstate.BuildStar(jid, senderJID, types.MessageID(req.MessageID), fromMe, req.Starred)); err != nil {
+		if err := sendAppState(client, appstate.BuildStar(jid, senderJID, types.MessageID(req.MessageID), fromMe, req.Starred)); err != nil {
 			respondErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}

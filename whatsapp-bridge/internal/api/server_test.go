@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -104,5 +105,26 @@ func TestWithAuth_EmptyToken_FailClosed(t *testing.T) {
 	}
 	if called {
 		t.Fatal("token vacío (fail-closed): next NO debe ejecutarse")
+	}
+}
+
+func TestIsAppStateConflict(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"lthash mismatch", errors.New(`server returned error updating app state (regular_high): <error code="409" text="conflict"/> (also, applying patches in the response failed: failed to decode app state regular_high patches: failed to verify patch v15: mismatching LTHash)`), true},
+		{"409 conflict solo", errors.New(`server returned error updating app state (regular_low): <error code="409" text="conflict"/>`), true},
+		{"error ajeno", errors.New("websocket disconnected"), false},
+		{"500 no conflict", errors.New(`<error code="500" text="internal"/>`), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isAppStateConflict(tc.err); got != tc.want {
+				t.Fatalf("isAppStateConflict(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

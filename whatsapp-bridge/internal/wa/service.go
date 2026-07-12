@@ -396,8 +396,12 @@ func (s *Service) SendMessage(recipient string, message string, mediaPath string
 	}
 
 	msg := &waE2E.Message{}
-	// Tipo/nombre de media para persistir el saliente en la DB (ver final de la funcion)
-	var dbMediaType, dbFilename string
+	// Metadatos de media para persistir el saliente en la DB (ver final de la funcion).
+	// url/direct_path/media_key/hashes salen del UploadResponse: sin ellos download_media
+	// no puede descargar los medios que este mismo bridge envio.
+	var dbMediaType, dbFilename, dbURL, dbDirectPath string
+	var dbMediaKey, dbFileSHA256, dbFileEncSHA256 []byte
+	var dbFileLength uint64
 
 	// Check if we have media to send
 	if mediaPath != "" {
@@ -477,6 +481,13 @@ func (s *Service) SendMessage(recipient string, message string, mediaPath string
 		}
 
 		fmt.Println("Media uploaded successfully")
+
+		dbURL = resp.URL
+		dbDirectPath = resp.DirectPath
+		dbMediaKey = resp.MediaKey
+		dbFileSHA256 = resp.FileSHA256
+		dbFileEncSHA256 = resp.FileEncSHA256
+		dbFileLength = resp.FileLength
 
 		// Create the appropriate message type based on media type
 		switch mediaType {
@@ -589,7 +600,7 @@ func (s *Service) SendMessage(recipient string, message string, mediaPath string
 		}
 		if err := messageStore.StoreMessage(
 			sendResp.ID, chatJID, senderUser, message, sendResp.Timestamp, true,
-			dbMediaType, dbFilename, "", "", nil, nil, nil, 0,
+			dbMediaType, dbFilename, dbURL, dbDirectPath, dbMediaKey, dbFileSHA256, dbFileEncSHA256, dbFileLength,
 		); err != nil {
 			fmt.Printf("warn: message sent but failed to persist outgoing copy: %v\n", err)
 		}
