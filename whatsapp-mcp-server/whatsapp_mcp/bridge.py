@@ -1,6 +1,7 @@
 """Cliente HTTP del bridge: auth por token, sesion keep-alive y las acciones/escrituras."""
 import json
 import os.path
+import shutil
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -653,6 +654,51 @@ def shutdown_bridge() -> Dict[str, Any]:
     return _bridge_post("shutdown", {})
 
 
+def _run_go_build(src_dir: str, out_path: str) -> Tuple[bool, str]:
+    """Compila el bridge Go desde src_dir hacia out_path. Separado para poder testearlo."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["go", "build", "-o", out_path, "."],
+            cwd=src_dir,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, f"go build fallo: {e}"
+    if proc.returncode != 0:
+        return False, f"go build fallo: {proc.stderr.strip()[:500]}"
+    return True, ""
+
+
+def ensure_bridge_binary(bin_path: str) -> Tuple[bool, str]:
+    """Garantiza que exista el binario del bridge; si falta, lo auto-compila con Go.
+
+    Pieza clave del plug-and-play: el plugin no distribuye binarios, asi que la primera
+    vez se compila desde BRIDGE_SRC_DIR (el codigo Go incluido en el plugin/repo) hacia
+    bin_path (fuera del directorio del plugin, para sobrevivir updates). Sin toolchain
+    Go devuelve un error accionable.
+    """
+    from whatsapp_mcp.config import BRIDGE_SRC_DIR
+
+    if os.path.isfile(bin_path):
+        return True, ""
+    if not shutil.which("go"):
+        return False, (
+            f"no existe el binario del bridge ({bin_path}) y no hay toolchain Go para "
+            "compilarlo. Instala Go (https://go.dev/dl/ o `brew install go`) y reintenta, "
+            "o compila manualmente y apunta WHATSAPP_BRIDGE_BIN al binario."
+        )
+    logger.info(f"compilando el bridge por primera vez ({BRIDGE_SRC_DIR} -> {bin_path})...")
+    os.makedirs(os.path.dirname(bin_path) or ".", exist_ok=True)
+    ok, err = _run_go_build(BRIDGE_SRC_DIR, bin_path)
+    if not ok:
+        return False, err
+    return True, "bridge compilado"
+
+
 def spawn_bridge() -> Tuple[bool, str]:
     """Lanza el binario del bridge como daemon independiente del server MCP.
 
@@ -664,14 +710,15 @@ def spawn_bridge() -> Tuple[bool, str]:
 
     from whatsapp_mcp.config import BRIDGE_BIN_PATH, BRIDGE_LOG_PATH, STORE_DIR
 
-    if not os.path.isfile(BRIDGE_BIN_PATH):
-        return False, (
-            f"bridge binary not found at {BRIDGE_BIN_PATH} "
-            "(compilalo con `go build -o whatsapp-bridge` o seteá WHATSAPP_BRIDGE_BIN)"
-        )
+    ok, msg = ensure_bridge_binary(BRIDGE_BIN_PATH)
+    if not ok:
+        return False, msg
     env = dict(os.environ)
     env.setdefault("WHATSAPP_STORE_DIR", STORE_DIR)
     try:
+        # El store y el log deben existir antes del primer arranque (modo plugin arranca
+        # sin ~/.whatsapp-mcp; el token y las DBs se crean dentro).
+        os.makedirs(STORE_DIR, exist_ok=True)
         with open(BRIDGE_LOG_PATH, "ab") as logf:
             subprocess.Popen(
                 [BRIDGE_BIN_PATH],

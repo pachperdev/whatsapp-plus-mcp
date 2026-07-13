@@ -10,9 +10,6 @@ whatsapp.log
 whatsapp-bridge/whatsapp-bridge
 whatsapp-bridge/whatsapp-client
 
-# Config MCP local (rutas absolutas de la máquina, no portable)
-.mcp.json
-
 # Guía de trabajo INTERNA (roadmap/log de desarrollo). No es documentación pública
 # ni va al repo de publicación; se mantiene solo en local.
 AUDIT.md
