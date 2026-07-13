@@ -28,7 +28,7 @@ jobs:
       - name: Test
         run: go test -race ./...
       - name: Lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
           working-directory: whatsapp-bridge
