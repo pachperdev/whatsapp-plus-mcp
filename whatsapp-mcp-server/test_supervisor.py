@@ -144,3 +144,39 @@ def test_watcher_unico_a_la_vez(monkeypatch):
         if not bridge_mod._qr_watcher_running:
             break
         _t.sleep(0.01)
+
+
+def test_watcher_sobrevive_timeout_transitorio_entre_rotaciones(monkeypatch):
+    # Entre la expiracion del codigo N y la emision del N+1 el bridge reporta "timeout"
+    # un instante; el watcher NO debe morir ahi (solo el timeout persistente es terminal).
+    secuencia = [
+        {"qr_status": "active", "code": "c1", "png_base64": "cDE="},
+        {"qr_status": "timeout"},                                      # gap transitorio
+        {"qr_status": "active", "code": "c2", "png_base64": "cDI="},  # roto
+        {"qr_status": "logged_in"},
+    ]
+    it = iter(secuencia)
+    monkeypatch.setattr(bridge_mod, "get_qr", lambda: next(it, {"qr_status": "logged_in"}))
+    refrescos = []
+    assert bridge_mod.start_qr_preview_watcher(
+        lambda png: refrescos.append(png), initial_code="c1", poll_interval_s=0.01
+    )
+    import time as _t
+    for _ in range(300):
+        if not bridge_mod._qr_watcher_running:
+            break
+        _t.sleep(0.01)
+    assert refrescos == [b"p2"], f"debio refrescar c2 tras el gap: {refrescos}"
+
+
+def test_watcher_termina_con_timeout_persistente(monkeypatch):
+    monkeypatch.setattr(bridge_mod, "get_qr", lambda: {"qr_status": "timeout"})
+    assert bridge_mod.start_qr_preview_watcher(
+        lambda png: None, initial_code="x", poll_interval_s=0.01, max_seconds=30
+    )
+    import time as _t
+    for _ in range(300):
+        if not bridge_mod._qr_watcher_running:
+            break
+        _t.sleep(0.01)
+    assert not bridge_mod._qr_watcher_running, "debio rendirse con timeout persistente"

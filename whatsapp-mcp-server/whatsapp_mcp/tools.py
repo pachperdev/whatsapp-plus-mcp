@@ -895,8 +895,13 @@ def login_with_qr(open_preview: bool = True) -> List[Any]:
     in the conversation; with open_preview=True it is also opened in the OS image viewer
     so the user can scan it comfortably.
 
-    QR codes rotate every ~30s: if the user reports it expired, call this tool again to
-    get the current one. After the user scans, call get_status to confirm login.
+    QR codes rotate every ~30s. The local viewer image auto-refreshes on each rotation;
+    if the user reports the QR expired, call this tool again to get the current one. After
+    the user scans, call get_status to confirm login.
+
+    IMPORTANT (clients that collapse tool results, e.g. Claude Desktop / claude.ai): after
+    calling this tool you MUST create an HTML artifact with the template included in the
+    result so the user sees the QR inside the chat. The result contains the exact template.
 
     Args:
         open_preview: Also open the QR in the local image viewer (default True)
@@ -960,17 +965,20 @@ var t = setInterval(function () {{
 }}, 1000);
 </script></body></html>"""
     contents.append(
-        "INSTRUCCIÓN PARA EL ASISTENTE (no la repitas literal al usuario): el usuario "
-        "NECESITA VER el código QR para escanearlo. Si tu interfaz NO muestra las imágenes "
-        "de los resultados de tools directamente en el chat (p. ej. Claude Desktop o "
-        "claude.ai), crea INMEDIATAMENTE — sin texto previo largo — un artifact HTML con "
-        "exactamente este contenido (genera el QR en el navegador al instante; NO uses "
-        "data URIs de imagen, son lentísimos de escribir):\n\n"
+        "INSTRUCCIÓN OBLIGATORIA PARA EL ASISTENTE (no la repitas literal al usuario): "
+        "en Claude Desktop, claude.ai o cualquier interfaz que NO muestre las imágenes de "
+        "los tool results en el chat, tu PRIMERA acción AHORA es crear un artifact HTML "
+        "con el contenido exacto de abajo. NO es opcional y NO basta con la ventana del "
+        "visor local: el usuario exige ver el QR también dentro del chat. No escribas "
+        "texto antes del artifact. NO uses data URIs de imagen (tardan minutos y el "
+        "código expira); esta plantilla genera el QR en el navegador al instante:\n\n"
         f"{artifact_html}\n\n"
-        "Si el usuario avisa que expiró (o el countdown llegó a 0 sin escaneo), vuelve a "
-        "llamar login_with_qr y ACTUALIZA el artifact reemplazando solo los valores de "
-        "CODE y EXPIRES — es un cambio de dos líneas, hazlo veloz. En interfaces que sí "
-        "muestran la imagen del tool result (p. ej. Claude Code) no hace falta el artifact."
+        "ROTACIÓN: si el countdown del artifact llega a 0, o el usuario dice que expiró, "
+        "o pasó ~1 minuto sin confirmación de escaneo, tu siguiente acción es llamar "
+        "login_with_qr de nuevo y ACTUALIZAR el artifact reemplazando SOLO los valores "
+        "de CODE y EXPIRES (dos líneas, hazlo sin anunciarlo). Tras el escaneo, confirma "
+        "con get_status. Únicamente en interfaces que sí muestran la imagen del tool "
+        "result en el chat (p. ej. Claude Code CLI) puedes omitir el artifact."
     )
     return contents
 

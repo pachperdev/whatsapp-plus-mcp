@@ -960,13 +960,24 @@ def start_qr_preview_watcher(
         global _qr_watcher_running
         last_code = initial_code
         deadline = _time.monotonic() + max_seconds
+        # Entre la expiración del código N y la emisión del N+1, /api/qr reporta
+        # "timeout" un instante: NO es terminal (ese bug congelaba el preview). Solo
+        # rendirse si el estado no-activo persiste (canal muerto) o al confirmar login.
+        strikes = 0
+        max_strikes = 12  # ~30 s con el poll default
         try:
             while _time.monotonic() < deadline:
                 _time.sleep(poll_interval_s)
                 q = get_qr()
                 status = q.get("qr_status")
+                if status in ("logged_in", "success"):
+                    return  # escaneado: misión cumplida
                 if status != "active":
-                    return  # logged_in/success (escaneado), timeout/none (canal reciclado)
+                    strikes += 1
+                    if strikes >= max_strikes:
+                        return  # canal muerto persistente; un nuevo login_with_qr rearma todo
+                    continue
+                strikes = 0
                 code = q.get("code", "")
                 png_b64 = q.get("png_base64", "")
                 if code and code != last_code and png_b64:
