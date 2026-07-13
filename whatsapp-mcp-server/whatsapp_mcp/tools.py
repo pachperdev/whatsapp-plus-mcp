@@ -854,6 +854,36 @@ def get_unread_chats() -> List[Dict[str, Any]]:
 
 # --- Login autogestionado (plug-and-play): el MCP gestiona el bridge y el QR ---
 
+def _qr_text_blocks(code: str, border: int = 2) -> str:
+    """QR en caracteres de medio bloque Unicode (▀▄█) para mostrarlo en el chat.
+
+    Texto puro: el asistente lo copia en un bloque de código y se renderiza al
+    instante, SIN herramientas (visualize/artifact tardan ~1 min; el data URI en
+    markdown lo bloquea Claude Desktop como enlace externo). Optimizado para tema
+    OSCURO: se pinta con tinta (bloque claro) los módulos INACTIVOS y se dejan sin
+    tinta (espacio → fondo oscuro) los módulos de datos, de modo que los datos se
+    ven oscuros sobre un marco claro — la orientación que espera un escáner. Medio
+    bloque comprime 2 filas por carácter (≈29 líneas) y compensa el alto de la
+    fuente monoespaciada, manteniendo el QR ~cuadrado.
+    """
+    import qrcode as _qrcode
+
+    q = _qrcode.QRCode(error_correction=_qrcode.constants.ERROR_CORRECT_L, border=border)
+    q.add_data(code)
+    q.make(fit=True)
+    m = q.get_matrix()  # True = módulo de datos (debe verse oscuro)
+    n = len(m)
+    lines = []
+    for r in range(0, n, 2):
+        row = []
+        for c in range(n):
+            up_ink = not m[r][c]  # tinta si el módulo es inactivo (fondo)
+            lo_ink = not (m[r + 1][c] if r + 1 < n else False)
+            row.append("█" if up_ink and lo_ink else "▀" if up_ink else "▄" if lo_ink else " ")
+        lines.append("".join(row))
+    return "\n".join(lines)
+
+
 def _qr_png_data_uri(code: str, scale: int = 1) -> str:
     """Data URI de un PNG MINI del QR (1-bit, ~800 bytes ≈ 370 tokens en base64).
 
@@ -981,48 +1011,35 @@ def login_with_qr(open_preview: bool = True) -> List[Any]:
                 lambda png: _open_image_preview(png, foreground=False),
                 initial_code=qr.get("code", ""),
             )
-    # EL QR DEBE VERSE EN LA CONVERSACIÓN (pedido explícito del usuario). Prioridad:
-    # (1) herramienta de visualización INLINE del cliente (p. ej. `visualize` en Claude
-    # Desktop) que renderiza dentro del flujo del chat; (2) artifact de conversación solo
-    # como fallback. El QR viaja como data URI MINI (PNG 1-bit ~800 B ≈ 370 tokens —
-    # copiable en segundos); el data URI grande del bridge (~3000 tokens, >1 min) y un
-    # CDN (bloqueado por CSP: QR en blanco) fallaron en pruebas reales. La ORDEN abre el
-    # resultado (primacía) y un recordatorio lo cierra (recencia).
-    qr_uri = _qr_png_data_uri(qr["code"])
-    inline_html = (
-        '<div style="text-align:center;font-family:system-ui">'
-        f'<img alt="QR de WhatsApp" src="{qr_uri}" style="width:320px;image-rendering:pixelated">'
-        '<p><b>WhatsApp → Ajustes → Dispositivos vinculados → Vincular un dispositivo</b></p></div>'
-    )
-    contents.append(
-        "⚠️ ACCIÓN OBLIGATORIA AHORA, ANTES DE CUALQUIER OTRA COSA: muestra el QR DENTRO "
-        "DE LA CONVERSACIÓN por la vía MÁS RÁPIDA disponible, en este orden de prioridad:\n"
-        "1) LA MÁS RÁPIDA (prefiérela): incluye la imagen como markdown DIRECTAMENTE en tu "
-        "mensaje de respuesta — se renderiza al instante mientras escribes, SIN llamar "
-        "ninguna herramienta. Escribe exactamente:\n"
-        f"![QR de WhatsApp]({qr_uri})\n"
-        "2) Solo si tu interfaz NO renderiza imágenes `data:` en markdown, usa tu "
-        "herramienta de visualización inline (p. ej. `visualize`) con el HTML de abajo.\n"
-        "3) Último recurso: un artifact de conversación con ese HTML.\n"
-        "NO uses `visualize` si el paso 1 funciona (visualize tarda ~1 min y el código "
-        "expira). PROHIBIDO: escribir archivos .html en la carpeta de trabajo o generar "
-        "otra imagen distinta a la provista. ÚNICA excepción a todo esto: una terminal CLI "
-        "que ya muestra la imagen de este resultado en el chat."
-    )
+    # DOS CANALES para el QR (decisión de producto tras muchas pruebas reales):
+    #  (A) PRIMARIO: la Vista Previa local — instantánea y auto-refrescada por el watcher,
+    #      así que nunca expira. Es el canal confiable en Claude Desktop.
+    #  (B) En el chat: el QR como TEXTO de medio-bloque. Es texto puro que el asistente
+    #      copia en un bloque de código y se renderiza al instante, SIN herramientas.
+    #      Descartadas por pruebas reales: data URI en markdown (Desktop lo bloquea como
+    #      enlace externo), visualize/artifact (~1 min → el código expira), CDN (CSP).
+    #  El Image content queda para clientes que SÍ renderizan tool results (Claude Code CLI).
+    qr_text = _qr_text_blocks(qr["code"])
     contents.append(Image(data=png_bytes, format="png"))
     contents.append(
-        "HTML para las vías 2/3 (imagen mini embebida, autocontenido):\n\n"
-        f"{inline_html}\n\n"
-        "ROTACIÓN: si el usuario dice que el QR expiró o falló el escaneo, o pasó ~1 "
-        "minuto sin confirmación, llama login_with_qr de nuevo y vuelve a mostrar la "
-        "imagen nueva por la misma vía. Tras el escaneo, confirma con get_status."
+        "MOSTRAR EL QR AL USUARIO — instrucciones para el asistente (no las repitas literal):\n"
+        "1) El QR YA está abierto en la Vista Previa local del sistema (canal principal: "
+        "se actualiza solo con cada rotación y no expira). Menciónalo.\n"
+        "2) ADEMÁS, muéstralo en el chat copiando el bloque de QR de abajo EXACTAMENTE, "
+        "dentro de un bloque de código con ``` (para fuente monoespaciada). Es texto puro: "
+        "se ve al instante mientras escribes, sin usar ninguna herramienta. NO uses "
+        "visualize ni artifacts ni imágenes markdown (fallan o tardan y el código expira). "
+        "Cópialo completo, sin alterar ni un carácter:\n\n"
+        f"```\n{qr_text}\n```\n\n"
+        "ROTACIÓN: si el usuario dice que expiró o falló el escaneo, o pasó ~1 minuto sin "
+        "confirmación, llama login_with_qr otra vez y vuelve a pegar el bloque nuevo. Tras "
+        "el escaneo, confirma con get_status."
     )
     contents.append(
-        "📱 Mensaje breve para el usuario (después de mostrar el QR): escanéalo desde "
-        "WhatsApp → Ajustes → Dispositivos vinculados → Vincular un dispositivo; rota cada "
-        f"~30-60 s y el visor local se actualiza solo.{preview_note} "
-        "RECUERDA (asistente): el QR debe quedar VISIBLE en el chat; si no lo mostraste, "
-        "hazlo AHORA."
+        "📱 Mensaje para el usuario: escanéalo desde WhatsApp → Ajustes → Dispositivos "
+        "vinculados → Vincular un dispositivo. Se abrió en tu visor de imágenes (la vía más "
+        f"nítida) y también quedó en el chat.{preview_note} Rota cada ~30-60 s; si el "
+        "escaneo falla, avísame y genero uno nuevo."
     )
     return contents
 

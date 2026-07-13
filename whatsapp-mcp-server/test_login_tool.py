@@ -46,25 +46,14 @@ async def test_login_with_qr_serializa_imagen_inline(monkeypatch):
     # tokens (>1 min, el codigo expira); la plantilla genera el QR en el navegador a
     # partir del codigo crudo (~270 chars) en segundos.
     textos = " ".join(c.text for c in contents if isinstance(c, TextContent))
-    # Determinismo de la instruccion: la orden del artifact debe ser el PRIMER contenido
-    # del resultado (primacia) y debe haber recordatorio al cierre (recencia). Con la
-    # orden al final, el modelo a veces narraba sin crear el artifact (visto en Desktop).
-    text_contents = [c.text for c in contents if isinstance(c, TextContent)]
-    assert "artifact" in text_contents[0].lower() and "ACCI" in text_contents[0], (
-        "la orden del artifact debe abrir el resultado"
-    )
-    assert "RECUERDA" in text_contents[-1], "falta el recordatorio de cierre"
-    assert "artifact" in textos.lower(), "falta la instruccion de artifact para el asistente"
-    # QR EN LA CONVERSACION: data URI mini (PNG 1-bit ~800B) que el modelo copia en
-    # segundos, con la herramienta de visualizacion inline como via preferida y artifact
-    # de conversacion solo como fallback. Sin CDN (CSP lo bloqueaba: QR en blanco).
+    # QR EN LA CONVERSACION: texto de medio-bloque en un code block (se renderiza al
+    # instante, sin herramientas). Descartadas por pruebas reales: markdown data URI
+    # (Desktop lo bloquea), visualize/artifact (~1 min, el codigo expira), CDN (CSP).
     assert "cdnjs" not in textos, "nada de CDNs (CSP los bloquea)"
-    assert "data:image/png;base64," in textos, "falta el data URI mini del QR"
-    import re as _re
-    m = _re.search(r"data:image/png;base64,([A-Za-z0-9+/=]+)", textos)
-    assert m and len(m.group(1)) < 2500, f"data URI demasiado largo para copiarlo rapido: {len(m.group(1)) if m else 0}"
-    assert "![" in textos and "](data:image/png;base64," in textos, "falta la imagen markdown inline (via mas rapida)"
-    assert "visualiz" in textos.lower(), "falta el fallback de visualizacion inline"
+    assert "data:image/png;base64," not in textos, "el data URI en markdown lo bloquea Desktop"
+    assert "```" in textos, "falta el bloque de codigo para el QR de texto"
+    assert any(ch in textos for ch in "▀▄█"), "falta el QR en caracteres de medio-bloque"
+    assert "Vista Previa" in textos or "visor de" in textos, "falta la Vista Previa como canal primario"
 
 
 @pytest.mark.anyio
@@ -85,20 +74,14 @@ def anyio_backend():
     return "asyncio"
 
 
-def test_qr_png_data_uri_compacto_y_valido():
-    """El PNG mini debe ser un PNG real (magic+IHDR) y lo bastante corto para copiarlo rapido."""
-    import base64
-    import struct
-
-    from whatsapp_mcp.tools import _qr_png_data_uri
+def test_qr_text_blocks_estructura_y_tamano():
+    """El QR de texto debe ser cuadrado-ish en medio-bloque y compacto para copiarlo rapido."""
+    from whatsapp_mcp.tools import _qr_text_blocks
 
     code = "https://wa.me/settings/linked_devices#2@" + "A" * 230
-    uri = _qr_png_data_uri(code)
-    assert uri.startswith("data:image/png;base64,")
-    b64 = uri.split(",", 1)[1]
-    assert len(b64) < 1500, f"demasiado grande: {len(b64)}"
-    png = base64.b64decode(b64)
-    assert png[:8] == b"\x89PNG\r\n\x1a\n", "magic PNG invalido"
-    w, h = struct.unpack(">II", png[16:24])
-    assert w == h and w >= 40, f"dimensiones sospechosas: {w}x{h}"
-    assert len(b64) < 1000, f"data URI mini demasiado grande: {len(b64)}"
+    txt = _qr_text_blocks(code)
+    lines = txt.splitlines()
+    # medio-bloque: ~la mitad de filas que columnas
+    assert all(set(ln) <= set(" \u2580\u2584\u2588") for ln in lines), "caracteres invalidos"
+    assert len(lines[0]) >= 2 * len(lines) - 4, "no parece medio-bloque (ratio alto/ancho)"
+    assert len(txt) < 3000, f"QR de texto demasiado grande para copiarlo rapido: {len(txt)}"
