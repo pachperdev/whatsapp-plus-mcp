@@ -49,6 +49,10 @@ async def test_login_with_qr_serializa_imagen_inline(monkeypatch):
     assert "data:image/png;base64," not in textos, "el data URI es demasiado lento de transcribir"
     assert "artifact" in textos.lower(), "falta la instruccion de artifact para el asistente"
     assert "qrcodejs" in textos or "qrcode.min.js" in textos, "falta la plantilla con la libreria QR"
+    # UX: modo carga integrado (artifact utilizable ANTES del codigo) y aviso de
+    # expiracion suave (el codigo suele seguir siendo escaneable tras el countdown).
+    assert "if (CODE)" in textos, "falta el modo carga (CODE vacio -> pantalla de espera)"
+    assert "pudo rotar" in textos, "falta el aviso suave de expiracion (no alarma falsa)"
     assert '"test"' in textos or "'test'" in textos or ">test<" in textos or "text: \"test\"" in textos or "test" in textos, "falta el codigo crudo interpolado"
 
 

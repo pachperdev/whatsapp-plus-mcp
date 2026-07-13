@@ -899,9 +899,13 @@ def login_with_qr(open_preview: bool = True) -> List[Any]:
     if the user reports the QR expired, call this tool again to get the current one. After
     the user scans, call get_status to confirm login.
 
-    IMPORTANT (clients that collapse tool results, e.g. Claude Desktop / claude.ai): after
-    calling this tool you MUST create an HTML artifact with the template included in the
-    result so the user sees the QR inside the chat. The result contains the exact template.
+    IMPORTANT (clients that collapse tool results, e.g. Claude Desktop / claude.ai):
+    the user must see the QR inside the chat. FASTEST flow: (1) BEFORE calling this tool,
+    create an HTML artifact using the template from a previous result with CODE="" and
+    EXPIRES="" — it renders a loading screen with scanning instructions; (2) call this
+    tool; (3) update only CODE and EXPIRES in the artifact. If you don't have the
+    template yet, call the tool first and create the artifact with the template included
+    in the result. Creating the artifact is MANDATORY on these clients.
 
     Args:
         open_preview: Also open the QR in the local image viewer (default True)
@@ -949,7 +953,8 @@ def login_with_qr(open_preview: bool = True) -> List[Any]:
     # cuenta regresiva de expiración. El asistente la escribe en segundos.
     artifact_html = f"""<!doctype html><html><head><meta charset="utf-8"><title>WhatsApp QR</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<style>body{{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#f7f7f7;font-family:system-ui}}#qr{{background:#fff;padding:20px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.12)}}#exp{{color:#555}}</style>
+<style>body{{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#f7f7f7;font-family:system-ui}}#qr{{background:#fff;padding:20px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.12);min-width:380px;min-height:380px;display:flex;align-items:center;justify-content:center}}#exp{{color:#555}}
+.spin{{width:44px;height:44px;border:4px solid #ddd;border-top-color:#25D366;border-radius:50%;animation:r 1s linear infinite}}@keyframes r{{to{{transform:rotate(360deg)}}}}</style>
 </head><body>
 <div id="qr"></div>
 <b>WhatsApp → Ajustes → Dispositivos vinculados → Vincular un dispositivo</b>
@@ -957,28 +962,39 @@ def login_with_qr(open_preview: bool = True) -> List[Any]:
 <script>
 var CODE = "{qr["code"]}";
 var EXPIRES = "{qr.get("expires_at", "")}";
-new QRCode(document.getElementById("qr"), {{text: CODE, width: 380, height: 380, correctLevel: QRCode.CorrectLevel.M}});
-var t = setInterval(function () {{
-  var s = Math.max(0, Math.round((new Date(EXPIRES) - new Date()) / 1000));
-  document.getElementById("exp").textContent = s > 0 ? ("El código expira en ~" + s + " s") : "⚠️ Código expirado — pídele a Claude que muestre el nuevo";
-  if (s <= 0) clearInterval(t);
-}}, 1000);
+if (CODE) {{
+  new QRCode(document.getElementById("qr"), {{text: CODE, width: 380, height: 380, correctLevel: QRCode.CorrectLevel.M}});
+  var t = setInterval(function () {{
+    var s = Math.max(0, Math.round((new Date(EXPIRES) - new Date()) / 1000));
+    // Aviso SUAVE al llegar a 0: en la práctica el código suele seguir siendo escaneable
+    // hasta que el canal emite el siguiente — no alarmar ni ocultar el QR.
+    document.getElementById("exp").textContent = s > 0 ? ("El código rota en ~" + s + " s") : "⏳ El código pudo rotar — si el escaneo falla, pide el nuevo";
+    if (s <= 0) clearInterval(t);
+  }}, 1000);
+}} else {{
+  document.getElementById("qr").innerHTML = '<div class="spin"></div>';
+  document.getElementById("exp").textContent = "Generando código QR… ten WhatsApp listo en la pantalla de escaneo";
+}}
 </script></body></html>"""
     contents.append(
         "INSTRUCCIÓN OBLIGATORIA PARA EL ASISTENTE (no la repitas literal al usuario): "
         "en Claude Desktop, claude.ai o cualquier interfaz que NO muestre las imágenes de "
-        "los tool results en el chat, tu PRIMERA acción AHORA es crear un artifact HTML "
-        "con el contenido exacto de abajo. NO es opcional y NO basta con la ventana del "
-        "visor local: el usuario exige ver el QR también dentro del chat. No escribas "
-        "texto antes del artifact. NO uses data URIs de imagen (tardan minutos y el "
-        "código expira); esta plantilla genera el QR en el navegador al instante:\n\n"
+        "los tool results en el chat, tu PRIMERA acción AHORA es crear (o actualizar, si "
+        "ya hiciste uno en modo carga) un artifact HTML con el contenido exacto de abajo. "
+        "NO es opcional y NO basta con la ventana del visor local: el usuario exige ver "
+        "el QR también dentro del chat. No escribas texto antes del artifact. NO uses "
+        "data URIs de imagen (tardan minutos y el código expira); esta plantilla genera "
+        "el QR en el navegador al instante:\n\n"
         f"{artifact_html}\n\n"
         "ROTACIÓN: si el countdown del artifact llega a 0, o el usuario dice que expiró, "
         "o pasó ~1 minuto sin confirmación de escaneo, tu siguiente acción es llamar "
         "login_with_qr de nuevo y ACTUALIZAR el artifact reemplazando SOLO los valores "
         "de CODE y EXPIRES (dos líneas, hazlo sin anunciarlo). Tras el escaneo, confirma "
-        "con get_status. Únicamente en interfaces que sí muestran la imagen del tool "
-        "result en el chat (p. ej. Claude Code CLI) puedes omitir el artifact."
+        "con get_status. TIP de velocidad para futuros logins: puedes crear este mismo "
+        "artifact ANTES de llamar login_with_qr dejando CODE=\"\" y EXPIRES=\"\" (muestra "
+        "una pantalla de carga con las instrucciones) y luego solo actualizar esos dos "
+        "valores con el resultado. Únicamente en interfaces que sí muestran la imagen del "
+        "tool result en el chat (p. ej. Claude Code CLI) puedes omitir el artifact."
     )
     return contents
 

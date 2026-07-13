@@ -899,7 +899,7 @@ def acquire_login_qr(max_recycles: int = 2, qr_wait_s: float = 15.0) -> Dict[str
                     break
                 if not st.get("logged_in"):
                     break  # modo QR: pasar a esperar el codigo
-            _time.sleep(1.0)
+            _time.sleep(0.5)  # poll agil: cada 500ms ahorra ~2s en la salida del QR
             st = get_status()
 
         # Fase 2: en modo QR, esperar a que el canal emita el codigo vigente.
@@ -913,7 +913,7 @@ def acquire_login_qr(max_recycles: int = 2, qr_wait_s: float = 15.0) -> Dict[str
                     return {"ok": True, "logged_in": False, "qr": qr}
                 if qr.get("qr_status") == "timeout":
                     break  # canal agotado: reciclar para un canal fresco
-                _time.sleep(1.0)
+                _time.sleep(0.5)
 
         shutdown_bridge()
         _time.sleep(2.0)
