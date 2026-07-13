@@ -854,25 +854,47 @@ def get_unread_chats() -> List[Dict[str, Any]]:
 
 # --- Login autogestionado (plug-and-play): el MCP gestiona el bridge y el QR ---
 
-def _qr_matrix_hex(code: str) -> str:
-    """Matriz del QR serializada como filas hex separadas por ';' (para el artifact).
+def _qr_png_data_uri(code: str, scale: int = 3) -> str:
+    """Data URI de un PNG MINI del QR (1-bit, ~800 bytes ≈ 370 tokens en base64).
 
-    Render autocontenido en el navegador (canvas + JS puro, sin CDN): EC nivel L y
-    borde de 2 módulos mantienen la matriz compacta (~900 chars para el código de
-    login de WhatsApp) — lo bastante corta para que el asistente la escriba en
-    segundos, a diferencia de un data URI (~3000 tokens).
+    Lo bastante compacto para que el asistente lo copie en segundos dentro de su
+    respuesta/visualización inline — a diferencia del PNG de 512px del bridge
+    (~3000 tokens, >1 min de transcripción, el código expiraba). PNG 1-bit
+    grayscale escrito a mano (stdlib): sin PIL ni dependencias de render.
     """
+    import struct
+    import zlib
+
     import qrcode as _qrcode
 
     q = _qrcode.QRCode(error_correction=_qrcode.constants.ERROR_CORRECT_L, border=2)
     q.add_data(code)
     q.make(fit=True)
-    rows = []
-    for row in q.get_matrix():
-        bits = "".join("1" if cell else "0" for cell in row)
-        bits += "0" * (-len(bits) % 4)
-        rows.append(format(int(bits, 2), f"0{len(bits) // 4}x"))
-    return ";".join(rows)
+    matrix = q.get_matrix()
+    size = len(matrix) * scale
+    raw = b""
+    for row in matrix:
+        bits = "".join(("0" if cell else "1") for cell in row for _ in range(scale))
+        bits += "1" * (-len(bits) % 8)  # padding blanco
+        packed = int(bits, 2).to_bytes(len(bits) // 8, "big")
+        raw += (b"\x00" + packed) * scale  # filtro None por scanline, repetida `scale` veces
+
+    def _chunk(ctype: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + ctype
+            + data
+            + struct.pack(">I", zlib.crc32(ctype + data) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", size, size, 1, 0, 0, 0, 0)  # 1-bit grayscale
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", ihdr)
+        + _chunk(b"IDAT", zlib.compress(raw, 9))
+        + _chunk(b"IEND", b"")
+    )
+    return "data:image/png;base64," + base64.b64encode(png).decode()
 
 
 def _open_image_preview(png_bytes: bytes, foreground: bool = True) -> str:
@@ -959,59 +981,46 @@ def login_with_qr(open_preview: bool = True) -> List[Any]:
                 lambda png: _open_image_preview(png, foreground=False),
                 initial_code=qr.get("code", ""),
             )
-    # Clientes que colapsan los tool results (Claude Desktop / claude.ai): la imagen no
-    # queda a la vista en el chat y el asistente debe re-mostrarla como artifact. La
-    # ORDEN va como PRIMER contenido del resultado (primacía) con recordatorio al cierre
-    # (recencia). Render AUTOCONTENIDO: la matriz del QR viene pre-computada y se pinta
-    # en un <canvas> con JS puro — un CDN (qrcodejs) fue bloqueado por la CSP del panel
-    # de Cowork y dejó el QR en blanco; y un data URI obliga al modelo a transcribir
-    # ~3000 tokens (>1 min, el código expira). Ambos vistos en pruebas reales.
-    contents.append(
-        "⚠️ ACCIÓN OBLIGATORIA AHORA, ANTES DE ESCRIBIR TEXTO AL USUARIO: crea UN artifact "
-        "DE CONVERSACIÓN tipo HTML copiando EXACTA la plantilla que viene más abajo (una "
-        "sola creación, sin pasos intermedios), para que el código QR sea visible DENTRO "
-        "del chat. IMPORTANTE: usa el mecanismo nativo de artifacts de la conversación — "
-        "NO escribas archivos .html en la carpeta de trabajo ni uses herramientas de "
-        "archivos/bash para esto (los archivos se abren en un panel aparte y fallan más). "
-        "Aplica en Claude Desktop, claude.ai y toda interfaz gráfica; la ventana del visor "
-        "local NO exime. ÚNICA excepción: una terminal CLI que ya muestra la imagen de "
-        "este resultado en el chat."
-    )
-    contents.append(Image(data=png_bytes, format="png"))
-    artifact_html = f"""<!doctype html><html><head><meta charset="utf-8"><title>WhatsApp QR</title>
-<style>body{{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#f7f7f7;font-family:system-ui}}#box{{background:#fff;padding:20px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.12)}}#exp{{color:#555}}</style>
-</head><body>
-<div id="box"><canvas id="cv"></canvas></div>
+    # EL QR DEBE VERSE EN LA CONVERSACIÓN (pedido explícito del usuario). Prioridad:
+    # (1) herramienta de visualización INLINE del cliente (p. ej. `visualize` en Claude
+    # Desktop) que renderiza dentro del flujo del chat; (2) artifact de conversación solo
+    # como fallback. El QR viaja como data URI MINI (PNG 1-bit ~800 B ≈ 370 tokens —
+    # copiable en segundos); el data URI grande del bridge (~3000 tokens, >1 min) y un
+    # CDN (bloqueado por CSP: QR en blanco) fallaron en pruebas reales. La ORDEN abre el
+    # resultado (primacía) y un recordatorio lo cierra (recencia).
+    qr_uri = _qr_png_data_uri(qr["code"])
+    inline_html = f"""<!doctype html><html><head><meta charset="utf-8"><style>body{{margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#fff;font-family:system-ui;min-height:100vh}}img{{width:342px;image-rendering:pixelated}}#exp{{color:#555}}</style></head><body>
+<img alt="QR de WhatsApp" src="{qr_uri}">
 <b>WhatsApp → Ajustes → Dispositivos vinculados → Vincular un dispositivo</b>
 <div id="exp"></div>
-<script>
-var MATRIX = "{_qr_matrix_hex(qr["code"])}";
-var EXPIRES = "{qr.get("expires_at", "")}";
-var rows = MATRIX.split(";"), n = rows.length, s = Math.max(4, Math.floor(400 / n));
-var c = document.getElementById("cv"); c.width = c.height = n * s;
-var x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height); x.fillStyle = "#000";
-rows.forEach(function (r, i) {{ for (var j = 0; j < n; j++) if ((parseInt(r[j >> 2], 16) >> (3 - (j & 3))) & 1) x.fillRect(j * s, i * s, s, s); }});
-var t = setInterval(function () {{
-  var sec = Math.max(0, Math.round((new Date(EXPIRES) - new Date()) / 1000));
-  document.getElementById("exp").textContent = sec > 0 ? ("El código rota en ~" + sec + " s") : "⏳ El código pudo rotar — si el escaneo falla, pide el nuevo";
-  if (sec <= 0) clearInterval(t);
-}}, 1000);
-</script></body></html>"""
+<script>var EXPIRES="{qr.get("expires_at", "")}";var t=setInterval(function(){{var s=Math.max(0,Math.round((new Date(EXPIRES)-new Date())/1000));document.getElementById("exp").textContent=s>0?("El código rota en ~"+s+" s"):"⏳ El código pudo rotar — si el escaneo falla, pide el nuevo";if(s<=0)clearInterval(t);}},1000);</script>
+</body></html>"""
     contents.append(
-        "PLANTILLA EXACTA DEL ARTIFACT (autocontenida: pinta el QR desde la matriz, sin "
-        "red ni librerías; NO uses data URIs de imagen ni CDNs):\n\n"
-        f"{artifact_html}\n\n"
+        "⚠️ ACCIÓN OBLIGATORIA AHORA, ANTES DE ESCRIBIR TEXTO AL USUARIO: muestra el QR "
+        "DENTRO DE LA CONVERSACIÓN. Vía preferida: tu herramienta de visualización inline "
+        "(p. ej. `visualize` en Claude Desktop), renderizando EXACTAMENTE el HTML de más "
+        "abajo. Solo si no tienes visualización inline, crea UN artifact de conversación "
+        "con ese mismo HTML. PROHIBIDO: escribir archivos (.html) en la carpeta de "
+        "trabajo, usar herramientas de archivos/bash para esto, o generar otra imagen "
+        "distinta a la provista. La ventana del visor local NO exime. ÚNICA excepción: "
+        "una terminal CLI que ya muestra la imagen de este resultado en el chat."
+    )
+    contents.append(Image(data=png_bytes, format="png"))
+    contents.append(
+        "HTML EXACTO PARA MOSTRAR EL QR (autocontenido, imagen mini embebida — se copia "
+        "en segundos):\n\n"
+        f"{inline_html}\n\n"
         "ROTACIÓN: si el countdown llega a 0, o el usuario dice que expiró, o pasó ~1 "
-        "minuto sin confirmación de escaneo, llama login_with_qr de nuevo y ACTUALIZA el "
-        "artifact reemplazando SOLO los valores de MATRIX y EXPIRES (dos líneas). Tras el "
-        "escaneo, confirma con get_status."
+        "minuto sin confirmación de escaneo, llama login_with_qr de nuevo y vuelve a "
+        "mostrar el HTML nuevo (cambian la imagen y EXPIRES). Tras el escaneo, confirma "
+        "con get_status."
     )
     contents.append(
         "📱 Mensaje para el usuario: escanea el QR desde WhatsApp → Ajustes → Dispositivos "
         "vinculados → Vincular un dispositivo. Los códigos rotan cada ~30-60 s; la imagen "
         f"del visor local se actualiza sola con cada rotación.{preview_note} "
-        "RECUERDA (asistente): si aún no creaste el artifact con el QR, hazlo AHORA, antes "
-        "de responder."
+        "RECUERDA (asistente): si aún no mostraste el QR en la conversación (visualización "
+        "inline o artifact), hazlo AHORA, antes de responder."
     )
     return contents
 

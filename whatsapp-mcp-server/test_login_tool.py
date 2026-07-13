@@ -54,13 +54,16 @@ async def test_login_with_qr_serializa_imagen_inline(monkeypatch):
         "la orden del artifact debe abrir el resultado"
     )
     assert "RECUERDA" in text_contents[-1], "falta el recordatorio de cierre"
-    assert "data:image/png;base64," not in textos, "el data URI es demasiado lento de transcribir"
     assert "artifact" in textos.lower(), "falta la instruccion de artifact para el asistente"
-    # Render AUTOCONTENIDO: la matriz pre-computada se pinta en un canvas con JS puro.
-    # Un CDN (qrcodejs) fue bloqueado por la CSP del panel de Cowork -> QR en blanco
-    # (visto en prueba real). Cero dependencias de red en la plantilla.
-    assert "cdnjs" not in textos, "la plantilla no debe depender de un CDN (CSP lo bloquea)"
-    assert "MATRIX" in textos and "canvas" in textos, "falta el render por matriz en canvas"
+    # QR EN LA CONVERSACION: data URI mini (PNG 1-bit ~800B) que el modelo copia en
+    # segundos, con la herramienta de visualizacion inline como via preferida y artifact
+    # de conversacion solo como fallback. Sin CDN (CSP lo bloqueaba: QR en blanco).
+    assert "cdnjs" not in textos, "nada de CDNs (CSP los bloquea)"
+    assert "data:image/png;base64," in textos, "falta el data URI mini del QR"
+    import re as _re
+    m = _re.search(r"data:image/png;base64,([A-Za-z0-9+/=]+)", textos)
+    assert m and len(m.group(1)) < 2500, f"data URI demasiado largo para copiarlo rapido: {len(m.group(1)) if m else 0}"
+    assert "visualiz" in textos.lower(), "falta la via de visualizacion inline en el chat"
     assert "pudo rotar" in textos, "falta el aviso suave de expiracion (no alarma falsa)"
 
 
@@ -82,25 +85,19 @@ def anyio_backend():
     return "asyncio"
 
 
-def test_qr_matrix_hex_roundtrip():
-    """La matriz serializada debe reconstruir EXACTAMENTE el QR original (bit a bit)."""
-    import qrcode as qrlib
+def test_qr_png_data_uri_compacto_y_valido():
+    """El PNG mini debe ser un PNG real (magic+IHDR) y lo bastante corto para copiarlo rapido."""
+    import base64
+    import struct
 
-    from whatsapp_mcp.tools import _qr_matrix_hex
+    from whatsapp_mcp.tools import _qr_png_data_uri
 
-    code = "https://wa.me/settings/linked_devices#2@" + "A" * 200
-    serial = _qr_matrix_hex(code)
-    rows = serial.split(";")
-    n = len(rows)
-
-    q = qrlib.QRCode(error_correction=qrlib.constants.ERROR_CORRECT_L, border=2)
-    q.add_data(code)
-    q.make(fit=True)
-    matrix = q.get_matrix()
-    assert n == len(matrix)
-    # decodificar igual que el JS del artifact: bit j de la fila = hex[j>>2] >> (3-(j&3)) & 1
-    for i, row in enumerate(matrix):
-        for j, cell in enumerate(row):
-            bit = (int(rows[i][j >> 2], 16) >> (3 - (j & 3))) & 1
-            assert bit == (1 if cell else 0), f"bit ({i},{j}) no coincide"
-    assert len(serial) < 1500, f"matriz demasiado grande para escribirla rapido: {len(serial)}"
+    code = "https://wa.me/settings/linked_devices#2@" + "A" * 230
+    uri = _qr_png_data_uri(code)
+    assert uri.startswith("data:image/png;base64,")
+    b64 = uri.split(",", 1)[1]
+    assert len(b64) < 1500, f"demasiado grande: {len(b64)}"
+    png = base64.b64decode(b64)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n", "magic PNG invalido"
+    w, h = struct.unpack(">II", png[16:24])
+    assert w == h and w >= 120, f"dimensiones sospechosas: {w}x{h}"
