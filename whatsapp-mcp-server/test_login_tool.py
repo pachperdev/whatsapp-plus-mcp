@@ -63,8 +63,8 @@ async def test_login_with_qr_serializa_imagen_inline(monkeypatch):
     import re as _re
     m = _re.search(r"data:image/png;base64,([A-Za-z0-9+/=]+)", textos)
     assert m and len(m.group(1)) < 2500, f"data URI demasiado largo para copiarlo rapido: {len(m.group(1)) if m else 0}"
-    assert "visualiz" in textos.lower(), "falta la via de visualizacion inline en el chat"
-    assert "pudo rotar" in textos, "falta el aviso suave de expiracion (no alarma falsa)"
+    assert "![" in textos and "](data:image/png;base64," in textos, "falta la imagen markdown inline (via mas rapida)"
+    assert "visualiz" in textos.lower(), "falta el fallback de visualizacion inline"
 
 
 @pytest.mark.anyio
@@ -100,4 +100,5 @@ def test_qr_png_data_uri_compacto_y_valido():
     png = base64.b64decode(b64)
     assert png[:8] == b"\x89PNG\r\n\x1a\n", "magic PNG invalido"
     w, h = struct.unpack(">II", png[16:24])
-    assert w == h and w >= 120, f"dimensiones sospechosas: {w}x{h}"
+    assert w == h and w >= 40, f"dimensiones sospechosas: {w}x{h}"
+    assert len(b64) < 1000, f"data URI mini demasiado grande: {len(b64)}"

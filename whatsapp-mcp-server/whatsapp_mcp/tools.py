@@ -854,7 +854,7 @@ def get_unread_chats() -> List[Dict[str, Any]]:
 
 # --- Login autogestionado (plug-and-play): el MCP gestiona el bridge y el QR ---
 
-def _qr_png_data_uri(code: str, scale: int = 3) -> str:
+def _qr_png_data_uri(code: str, scale: int = 1) -> str:
     """Data URI de un PNG MINI del QR (1-bit, ~800 bytes ≈ 370 tokens en base64).
 
     Lo bastante compacto para que el asistente lo copie en segundos dentro de su
@@ -989,38 +989,40 @@ def login_with_qr(open_preview: bool = True) -> List[Any]:
     # CDN (bloqueado por CSP: QR en blanco) fallaron en pruebas reales. La ORDEN abre el
     # resultado (primacía) y un recordatorio lo cierra (recencia).
     qr_uri = _qr_png_data_uri(qr["code"])
-    inline_html = f"""<!doctype html><html><head><meta charset="utf-8"><style>body{{margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#fff;font-family:system-ui;min-height:100vh}}img{{width:342px;image-rendering:pixelated}}#exp{{color:#555}}</style></head><body>
-<img alt="QR de WhatsApp" src="{qr_uri}">
-<b>WhatsApp → Ajustes → Dispositivos vinculados → Vincular un dispositivo</b>
-<div id="exp"></div>
-<script>var EXPIRES="{qr.get("expires_at", "")}";var t=setInterval(function(){{var s=Math.max(0,Math.round((new Date(EXPIRES)-new Date())/1000));document.getElementById("exp").textContent=s>0?("El código rota en ~"+s+" s"):"⏳ El código pudo rotar — si el escaneo falla, pide el nuevo";if(s<=0)clearInterval(t);}},1000);</script>
-</body></html>"""
+    inline_html = (
+        '<div style="text-align:center;font-family:system-ui">'
+        f'<img alt="QR de WhatsApp" src="{qr_uri}" style="width:320px;image-rendering:pixelated">'
+        '<p><b>WhatsApp → Ajustes → Dispositivos vinculados → Vincular un dispositivo</b></p></div>'
+    )
     contents.append(
-        "⚠️ ACCIÓN OBLIGATORIA AHORA, ANTES DE ESCRIBIR TEXTO AL USUARIO: muestra el QR "
-        "DENTRO DE LA CONVERSACIÓN. Vía preferida: tu herramienta de visualización inline "
-        "(p. ej. `visualize` en Claude Desktop), renderizando EXACTAMENTE el HTML de más "
-        "abajo. Solo si no tienes visualización inline, crea UN artifact de conversación "
-        "con ese mismo HTML. PROHIBIDO: escribir archivos (.html) en la carpeta de "
-        "trabajo, usar herramientas de archivos/bash para esto, o generar otra imagen "
-        "distinta a la provista. La ventana del visor local NO exime. ÚNICA excepción: "
-        "una terminal CLI que ya muestra la imagen de este resultado en el chat."
+        "⚠️ ACCIÓN OBLIGATORIA AHORA, ANTES DE CUALQUIER OTRA COSA: muestra el QR DENTRO "
+        "DE LA CONVERSACIÓN por la vía MÁS RÁPIDA disponible, en este orden de prioridad:\n"
+        "1) LA MÁS RÁPIDA (prefiérela): incluye la imagen como markdown DIRECTAMENTE en tu "
+        "mensaje de respuesta — se renderiza al instante mientras escribes, SIN llamar "
+        "ninguna herramienta. Escribe exactamente:\n"
+        f"![QR de WhatsApp]({qr_uri})\n"
+        "2) Solo si tu interfaz NO renderiza imágenes `data:` en markdown, usa tu "
+        "herramienta de visualización inline (p. ej. `visualize`) con el HTML de abajo.\n"
+        "3) Último recurso: un artifact de conversación con ese HTML.\n"
+        "NO uses `visualize` si el paso 1 funciona (visualize tarda ~1 min y el código "
+        "expira). PROHIBIDO: escribir archivos .html en la carpeta de trabajo o generar "
+        "otra imagen distinta a la provista. ÚNICA excepción a todo esto: una terminal CLI "
+        "que ya muestra la imagen de este resultado en el chat."
     )
     contents.append(Image(data=png_bytes, format="png"))
     contents.append(
-        "HTML EXACTO PARA MOSTRAR EL QR (autocontenido, imagen mini embebida — se copia "
-        "en segundos):\n\n"
+        "HTML para las vías 2/3 (imagen mini embebida, autocontenido):\n\n"
         f"{inline_html}\n\n"
-        "ROTACIÓN: si el countdown llega a 0, o el usuario dice que expiró, o pasó ~1 "
-        "minuto sin confirmación de escaneo, llama login_with_qr de nuevo y vuelve a "
-        "mostrar el HTML nuevo (cambian la imagen y EXPIRES). Tras el escaneo, confirma "
-        "con get_status."
+        "ROTACIÓN: si el usuario dice que el QR expiró o falló el escaneo, o pasó ~1 "
+        "minuto sin confirmación, llama login_with_qr de nuevo y vuelve a mostrar la "
+        "imagen nueva por la misma vía. Tras el escaneo, confirma con get_status."
     )
     contents.append(
-        "📱 Mensaje para el usuario: escanea el QR desde WhatsApp → Ajustes → Dispositivos "
-        "vinculados → Vincular un dispositivo. Los códigos rotan cada ~30-60 s; la imagen "
-        f"del visor local se actualiza sola con cada rotación.{preview_note} "
-        "RECUERDA (asistente): si aún no mostraste el QR en la conversación (visualización "
-        "inline o artifact), hazlo AHORA, antes de responder."
+        "📱 Mensaje breve para el usuario (después de mostrar el QR): escanéalo desde "
+        "WhatsApp → Ajustes → Dispositivos vinculados → Vincular un dispositivo; rota cada "
+        f"~30-60 s y el visor local se actualiza solo.{preview_note} "
+        "RECUERDA (asistente): el QR debe quedar VISIBLE en el chat; si no lo mostraste, "
+        "hazlo AHORA."
     )
     return contents
 
