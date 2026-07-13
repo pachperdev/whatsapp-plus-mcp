@@ -854,6 +854,27 @@ def get_unread_chats() -> List[Dict[str, Any]]:
 
 # --- Login autogestionado (plug-and-play): el MCP gestiona el bridge y el QR ---
 
+def _qr_matrix_hex(code: str) -> str:
+    """Matriz del QR serializada como filas hex separadas por ';' (para el artifact).
+
+    Render autocontenido en el navegador (canvas + JS puro, sin CDN): EC nivel L y
+    borde de 2 módulos mantienen la matriz compacta (~900 chars para el código de
+    login de WhatsApp) — lo bastante corta para que el asistente la escriba en
+    segundos, a diferencia de un data URI (~3000 tokens).
+    """
+    import qrcode as _qrcode
+
+    q = _qrcode.QRCode(error_correction=_qrcode.constants.ERROR_CORRECT_L, border=2)
+    q.add_data(code)
+    q.make(fit=True)
+    rows = []
+    for row in q.get_matrix():
+        bits = "".join("1" if cell else "0" for cell in row)
+        bits += "0" * (-len(bits) % 4)
+        rows.append(format(int(bits, 2), f"0{len(bits) // 4}x"))
+    return ";".join(rows)
+
+
 def _open_image_preview(png_bytes: bytes, foreground: bool = True) -> str:
     """Escribe el PNG a un archivo temporal y lo abre con el visor del SO.
 
@@ -941,56 +962,46 @@ def login_with_qr(open_preview: bool = True) -> List[Any]:
     # Clientes que colapsan los tool results (Claude Desktop / claude.ai): la imagen no
     # queda a la vista en el chat y el asistente debe re-mostrarla como artifact. La
     # ORDEN va como PRIMER contenido del resultado (primacía) con recordatorio al cierre
-    # (recencia): con la orden solo al final, el modelo a veces narraba sin crear el
-    # artifact (visto en Desktop). NO pasar la imagen como data URI: el modelo tardaría
-    # >1 min transcribiendo ~3000 tokens de base64 y el código expiraría (visto en
-    # pruebas reales). En su lugar: el CÓDIGO crudo (~270 chars) + plantilla que genera
-    # el QR en el navegador (qrcodejs desde cdnjs, permitido en artifacts).
+    # (recencia). Render AUTOCONTENIDO: la matriz del QR viene pre-computada y se pinta
+    # en un <canvas> con JS puro — un CDN (qrcodejs) fue bloqueado por la CSP del panel
+    # de Cowork y dejó el QR en blanco; y un data URI obliga al modelo a transcribir
+    # ~3000 tokens (>1 min, el código expira). Ambos vistos en pruebas reales.
     contents.append(
-        "⚠️ ACCIÓN OBLIGATORIA ANTES DE ESCRIBIR CUALQUIER TEXTO AL USUARIO: crea (o "
-        "actualiza, si ya hiciste uno en modo carga) un artifact HTML con la plantilla "
-        "que viene más abajo en este mismo resultado, para que el código QR sea visible "
-        "DENTRO del chat. Esto aplica SIEMPRE — Claude Desktop, claude.ai y cualquier "
-        "interfaz gráfica; la ventana del visor local NO exime. ÚNICA excepción: una "
-        "terminal CLI que ya muestra la imagen de este resultado en el chat."
+        "⚠️ ACCIÓN OBLIGATORIA AHORA, ANTES DE ESCRIBIR TEXTO AL USUARIO: crea UN artifact "
+        "HTML copiando EXACTA la plantilla que viene más abajo (una sola creación, sin "
+        "pasos intermedios), para que el código QR sea visible DENTRO del chat. Aplica en "
+        "Claude Desktop, claude.ai y toda interfaz gráfica; la ventana del visor local NO "
+        "exime. ÚNICA excepción: una terminal CLI que ya muestra la imagen de este "
+        "resultado en el chat."
     )
     contents.append(Image(data=png_bytes, format="png"))
     artifact_html = f"""<!doctype html><html><head><meta charset="utf-8"><title>WhatsApp QR</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<style>body{{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#f7f7f7;font-family:system-ui}}#qr{{background:#fff;padding:20px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.12);min-width:380px;min-height:380px;display:flex;align-items:center;justify-content:center}}#exp{{color:#555}}
-.spin{{width:44px;height:44px;border:4px solid #ddd;border-top-color:#25D366;border-radius:50%;animation:r 1s linear infinite}}@keyframes r{{to{{transform:rotate(360deg)}}}}</style>
+<style>body{{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#f7f7f7;font-family:system-ui}}#box{{background:#fff;padding:20px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.12)}}#exp{{color:#555}}</style>
 </head><body>
-<div id="qr"></div>
+<div id="box"><canvas id="cv"></canvas></div>
 <b>WhatsApp → Ajustes → Dispositivos vinculados → Vincular un dispositivo</b>
 <div id="exp"></div>
 <script>
-var CODE = "{qr["code"]}";
+var MATRIX = "{_qr_matrix_hex(qr["code"])}";
 var EXPIRES = "{qr.get("expires_at", "")}";
-if (CODE) {{
-  new QRCode(document.getElementById("qr"), {{text: CODE, width: 380, height: 380, correctLevel: QRCode.CorrectLevel.M}});
-  var t = setInterval(function () {{
-    var s = Math.max(0, Math.round((new Date(EXPIRES) - new Date()) / 1000));
-    // Aviso SUAVE al llegar a 0: en la práctica el código suele seguir siendo escaneable
-    // hasta que el canal emite el siguiente — no alarmar ni ocultar el QR.
-    document.getElementById("exp").textContent = s > 0 ? ("El código rota en ~" + s + " s") : "⏳ El código pudo rotar — si el escaneo falla, pide el nuevo";
-    if (s <= 0) clearInterval(t);
-  }}, 1000);
-}} else {{
-  document.getElementById("qr").innerHTML = '<div class="spin"></div>';
-  document.getElementById("exp").textContent = "Generando código QR… ten WhatsApp listo en la pantalla de escaneo";
-}}
+var rows = MATRIX.split(";"), n = rows.length, s = Math.max(4, Math.floor(400 / n));
+var c = document.getElementById("cv"); c.width = c.height = n * s;
+var x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height); x.fillStyle = "#000";
+rows.forEach(function (r, i) {{ for (var j = 0; j < n; j++) if ((parseInt(r[j >> 2], 16) >> (3 - (j & 3))) & 1) x.fillRect(j * s, i * s, s, s); }});
+var t = setInterval(function () {{
+  var sec = Math.max(0, Math.round((new Date(EXPIRES) - new Date()) / 1000));
+  document.getElementById("exp").textContent = sec > 0 ? ("El código rota en ~" + sec + " s") : "⏳ El código pudo rotar — si el escaneo falla, pide el nuevo";
+  if (sec <= 0) clearInterval(t);
+}}, 1000);
 </script></body></html>"""
     contents.append(
-        "PLANTILLA EXACTA DEL ARTIFACT (genera el QR en el navegador al instante; NO uses "
-        "data URIs de imagen, tardan minutos en escribirse y el código expira):\n\n"
+        "PLANTILLA EXACTA DEL ARTIFACT (autocontenida: pinta el QR desde la matriz, sin "
+        "red ni librerías; NO uses data URIs de imagen ni CDNs):\n\n"
         f"{artifact_html}\n\n"
-        "ROTACIÓN: si el countdown del artifact llega a 0, o el usuario dice que expiró, "
-        "o pasó ~1 minuto sin confirmación de escaneo, llama login_with_qr de nuevo y "
-        "ACTUALIZA el artifact reemplazando SOLO los valores de CODE y EXPIRES (dos "
-        "líneas, hazlo sin anunciarlo). Tras el escaneo, confirma con get_status. TIP de "
-        "velocidad para futuros logins: puedes crear este mismo artifact ANTES de llamar "
-        "login_with_qr con CODE=\"\" y EXPIRES=\"\" (pantalla de carga con instrucciones) "
-        "y luego solo actualizar esos dos valores con el resultado."
+        "ROTACIÓN: si el countdown llega a 0, o el usuario dice que expiró, o pasó ~1 "
+        "minuto sin confirmación de escaneo, llama login_with_qr de nuevo y ACTUALIZA el "
+        "artifact reemplazando SOLO los valores de MATRIX y EXPIRES (dos líneas). Tras el "
+        "escaneo, confirma con get_status."
     )
     contents.append(
         "📱 Mensaje para el usuario: escanea el QR desde WhatsApp → Ajustes → Dispositivos "

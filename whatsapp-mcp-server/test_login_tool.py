@@ -56,12 +56,12 @@ async def test_login_with_qr_serializa_imagen_inline(monkeypatch):
     assert "RECUERDA" in text_contents[-1], "falta el recordatorio de cierre"
     assert "data:image/png;base64," not in textos, "el data URI es demasiado lento de transcribir"
     assert "artifact" in textos.lower(), "falta la instruccion de artifact para el asistente"
-    assert "qrcodejs" in textos or "qrcode.min.js" in textos, "falta la plantilla con la libreria QR"
-    # UX: modo carga integrado (artifact utilizable ANTES del codigo) y aviso de
-    # expiracion suave (el codigo suele seguir siendo escaneable tras el countdown).
-    assert "if (CODE)" in textos, "falta el modo carga (CODE vacio -> pantalla de espera)"
+    # Render AUTOCONTENIDO: la matriz pre-computada se pinta en un canvas con JS puro.
+    # Un CDN (qrcodejs) fue bloqueado por la CSP del panel de Cowork -> QR en blanco
+    # (visto en prueba real). Cero dependencias de red en la plantilla.
+    assert "cdnjs" not in textos, "la plantilla no debe depender de un CDN (CSP lo bloquea)"
+    assert "MATRIX" in textos and "canvas" in textos, "falta el render por matriz en canvas"
     assert "pudo rotar" in textos, "falta el aviso suave de expiracion (no alarma falsa)"
-    assert '"test"' in textos or "'test'" in textos or ">test<" in textos or "text: \"test\"" in textos or "test" in textos, "falta el codigo crudo interpolado"
 
 
 @pytest.mark.anyio
@@ -80,3 +80,27 @@ async def test_login_with_qr_sesion_valida_sin_imagen(monkeypatch):
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+def test_qr_matrix_hex_roundtrip():
+    """La matriz serializada debe reconstruir EXACTAMENTE el QR original (bit a bit)."""
+    import qrcode as qrlib
+
+    from whatsapp_mcp.tools import _qr_matrix_hex
+
+    code = "https://wa.me/settings/linked_devices#2@" + "A" * 200
+    serial = _qr_matrix_hex(code)
+    rows = serial.split(";")
+    n = len(rows)
+
+    q = qrlib.QRCode(error_correction=qrlib.constants.ERROR_CORRECT_L, border=2)
+    q.add_data(code)
+    q.make(fit=True)
+    matrix = q.get_matrix()
+    assert n == len(matrix)
+    # decodificar igual que el JS del artifact: bit j de la fila = hex[j>>2] >> (3-(j&3)) & 1
+    for i, row in enumerate(matrix):
+        for j, cell in enumerate(row):
+            bit = (int(rows[i][j >> 2], 16) >> (3 - (j & 3))) & 1
+            assert bit == (1 if cell else 0), f"bit ({i},{j}) no coincide"
+    assert len(serial) < 1500, f"matriz demasiado grande para escribirla rapido: {len(serial)}"

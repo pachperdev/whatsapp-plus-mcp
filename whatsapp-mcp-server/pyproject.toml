@@ -12,6 +12,7 @@ dependencies = [
     # Tope <2: la v2 (~2026-07) trae breaking changes (FastMCP -> MCPServer, etc.).
     # Migrar a v2 es trabajo explicito de otra fase, no un `uv lock --upgrade` accidental.
     "mcp[cli]>=1.28.1,<2",
+    "qrcode>=8.2",
     "requests>=2.34.2",
 ]
 
