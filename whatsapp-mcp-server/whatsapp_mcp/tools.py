@@ -876,7 +876,9 @@ def _open_image_preview(png_bytes: bytes) -> str:
         return ""
 
 
-@mcp.tool(annotations=_WRITE_IDEMPOTENT)
+# structured_output=False: el retorno mezcla Image y texto; con structured output FastMCP
+# intenta serializar el Image a JSON y falla ("Unable to serialize unknown type ... Image").
+@mcp.tool(annotations=_WRITE_IDEMPOTENT, structured_output=False)
 def login_with_qr(open_preview: bool = True) -> List[Any]:
     """Connect to WhatsApp, reusing the existing session or guiding a QR login.
 
