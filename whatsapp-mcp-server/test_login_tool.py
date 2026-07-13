@@ -41,6 +41,11 @@ async def test_login_with_qr_serializa_imagen_inline(monkeypatch):
     types_found = {type(c) for c in contents}
     assert ImageContent in types_found, f"sin ImageContent: {types_found}"
     assert TextContent in types_found, f"sin TextContent: {types_found}"
+    # Clientes que colapsan los tool results (Claude Desktop/web): el asistente debe
+    # poder re-mostrar el QR — exige el data URI + la instruccion de artifact.
+    textos = " ".join(c.text for c in contents if isinstance(c, TextContent))
+    assert "data:image/png;base64," in textos, "falta el data URI para re-mostrar el QR"
+    assert "artifact" in textos.lower(), "falta la instruccion de artifact para el asistente"
 
 
 @pytest.mark.anyio

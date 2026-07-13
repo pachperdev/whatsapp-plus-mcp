@@ -927,6 +927,20 @@ def login_with_qr(open_preview: bool = True) -> List[Any]:
         f"vuelve a llamar login_with_qr para obtener el vigente.{preview_note} "
         "Tras escanear, confirma con get_status."
     )
+    # Clientes que colapsan los tool results (Claude Desktop / claude.ai): la imagen de
+    # arriba no queda a la vista en el chat. Instrucción + data URI para que el asistente
+    # re-muestre el QR de la forma nativa de su interfaz (artifact HTML).
+    contents.append(
+        "INSTRUCCIÓN PARA EL ASISTENTE (no la repitas literal al usuario): el usuario "
+        "NECESITA VER el código QR para escanearlo. Si tu interfaz NO muestra las imágenes "
+        "de los resultados de tools directamente en el chat (p. ej. Claude Desktop o "
+        "claude.ai), crea INMEDIATAMENTE un artifact HTML que muestre el QR en grande, "
+        "usando exactamente esta etiqueta:\n"
+        f'<img src="data:image/png;base64,{qr["png_base64"]}" '
+        'alt="QR de WhatsApp" style="width:min(90vw,420px);image-rendering:pixelated"/>\n'
+        "Si tu interfaz sí muestra la imagen del tool result (p. ej. Claude Code), no "
+        "hace falta el artifact."
+    )
     return contents
 
 
