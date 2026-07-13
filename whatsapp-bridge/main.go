@@ -183,6 +183,45 @@ func main() {
 	// Create channel to track connection success
 	connected := make(chan bool, 1)
 
+	// El server HTTP arranca ANTES del pairing: durante el modo QR el supervisor MCP
+	// necesita consultar /api/qr y /api/status (el resto de rutas responde error hasta
+	// que haya sesión). Si el server arrancara después, el QR solo existiría en stdout.
+	token, tokErr := auth.GetOrCreateBridgeToken(cfg.StoreDir)
+	if tokErr != nil {
+		fmt.Printf("WARNING: could not set up auth token: %v\n", tokErr)
+	}
+
+	// shutdownRequested permite a /api/shutdown reciclar el proceso por el mismo camino
+	// ordenado que SIGINT/SIGTERM (el supervisor lo usa para renovar sesiones zombie).
+	shutdownRequested := make(chan struct{}, 1)
+	requestShutdown := func() {
+		select {
+		case shutdownRequested <- struct{}{}:
+		default:
+		}
+	}
+	handler := api.NewServer(svc, client, messageStore, token, requestShutdown)
+
+	// Bind SOLO a loopback (config.Load ya valido que cfg.Addr no se exponga a la red)
+	// + timeouts (anti cliente lento/DoS).
+	serverAddr := cfg.Addr
+	srv := &http.Server{
+		Addr:         serverAddr,
+		Handler:      handler,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
+
+	// Run server in a goroutine so it doesn't block. ErrServerClosed es el retorno
+	// NORMAL de un apagado ordenado (srv.Shutdown), no un error: no lo logueamos.
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Printf("REST API server error: %v\n", err)
+		}
+	}()
+
 	// Connect to WhatsApp
 	if client.Store.ID == nil {
 		// No ID stored, this is a new client, need to pair with phone
@@ -193,17 +232,25 @@ func main() {
 			return
 		}
 
-		// Print QR code for pairing with phone
+		// Publicar cada código en el estado (para /api/qr) además de imprimirlo.
 		for evt := range qrChan {
 			if evt.Event == "code" {
+				svc.SetQRCode(evt.Code, evt.Timeout)
 				fmt.Println("\nScan this QR code with your WhatsApp app:")
 				// Code crudo para poder generar un PNG nitido fuera de la terminal (el ASCII
 				// half-block renderiza muy lento en algunos clientes y el QR expira antes).
 				fmt.Printf("QR_RAW>>>%s<<<\n", evt.Code)
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
 			} else if evt.Event == "success" {
+				svc.SetQRStatus("success")
 				connected <- true
 				break
+			} else if evt.Event == "timeout" {
+				// Canal QR agotado sin escaneo: dejar el estado visible en /api/qr y salir;
+				// el supervisor recicla el proceso para obtener un canal fresco.
+				svc.SetQRStatus("timeout")
+				logger.Errorf("Timeout waiting for QR code scan")
+				return
 			}
 		}
 
@@ -212,6 +259,7 @@ func main() {
 		case <-connected:
 			fmt.Println("\nSuccessfully connected and authenticated!")
 		case <-time.After(3 * time.Minute):
+			svc.SetQRStatus("timeout")
 			logger.Errorf("Timeout waiting for QR code scan")
 			return
 		}
@@ -235,41 +283,18 @@ func main() {
 
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
 
-	// Start REST API server
-	token, tokErr := auth.GetOrCreateBridgeToken(cfg.StoreDir)
-	if tokErr != nil {
-		fmt.Printf("WARNING: could not set up auth token: %v\n", tokErr)
-	}
-	handler := api.NewServer(svc, client, messageStore, token)
-
-	// Bind SOLO a loopback (config.Load ya valido que cfg.Addr no se exponga a la red)
-	// + timeouts (anti cliente lento/DoS).
-	serverAddr := cfg.Addr
-	srv := &http.Server{
-		Addr:         serverAddr,
-		Handler:      handler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 60 * time.Second,
-		IdleTimeout:  120 * time.Second,
-	}
-	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
-
-	// Run server in a goroutine so it doesn't block. ErrServerClosed es el retorno
-	// NORMAL de un apagado ordenado (srv.Shutdown), no un error: no lo logueamos.
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Printf("REST API server error: %v\n", err)
-		}
-	}()
-
 	// Create a channel to keep the main goroutine alive
 	exitChan := make(chan os.Signal, 1)
 	signal.Notify(exitChan, syscall.SIGINT, syscall.SIGTERM)
 
 	fmt.Println("REST server is running. Press Ctrl+C to disconnect and exit.")
 
-	// Wait for termination signal
-	<-exitChan
+	// Wait for termination signal (SIGINT/SIGTERM) o apagado pedido via /api/shutdown
+	select {
+	case <-exitChan:
+	case <-shutdownRequested:
+		fmt.Println("Shutdown requested via /api/shutdown")
+	}
 
 	fmt.Println("Disconnecting...")
 	// Apagado ordenado del server HTTP: drena las requests en vuelo (con un tope de

@@ -633,3 +633,144 @@ def get_unread_chats() -> List[Dict[str, Any]]:
     if not data.get("success"):
         return []
     return data.get("chats", [])
+
+
+# --- Supervisor del bridge: login autogestionado (plug-and-play) ---
+#
+# El server MCP es el unico proceso que el cliente (Claude Desktop/Code) arranca. Estas
+# funciones le permiten adoptar un bridge sano existente (nunca duplicar conexiones),
+# lanzar uno si no hay, y reciclarlo cuando la sesion quedo zombie. El bind loopback del
+# bridge actua de mutex natural: dos bridges sobre el mismo puerto son imposibles.
+
+def get_qr() -> Dict[str, Any]:
+    """Estado del flujo de login QR: qr_status (logged_in|none|active|success|timeout)
+    y, con "active", el codigo crudo + png_base64 + expires_at."""
+    return _bridge_get("qr")
+
+
+def shutdown_bridge() -> Dict[str, Any]:
+    """Pide al bridge un apagado ordenado (mismo camino que SIGTERM)."""
+    return _bridge_post("shutdown", {})
+
+
+def spawn_bridge() -> Tuple[bool, str]:
+    """Lanza el binario del bridge como daemon independiente del server MCP.
+
+    start_new_session=True lo desacopla: si el cliente MCP reinicia el server, el bridge
+    (y la sesion WhatsApp) sobreviven y la proxima instancia lo adopta via health check.
+    stdout/stderr van al log del store porque ya no hay terminal.
+    """
+    import subprocess
+
+    from whatsapp_mcp.config import BRIDGE_BIN_PATH, BRIDGE_LOG_PATH, STORE_DIR
+
+    if not os.path.isfile(BRIDGE_BIN_PATH):
+        return False, (
+            f"bridge binary not found at {BRIDGE_BIN_PATH} "
+            "(compilalo con `go build -o whatsapp-bridge` o seteá WHATSAPP_BRIDGE_BIN)"
+        )
+    env = dict(os.environ)
+    env.setdefault("WHATSAPP_STORE_DIR", STORE_DIR)
+    try:
+        with open(BRIDGE_LOG_PATH, "ab") as logf:
+            subprocess.Popen(
+                [BRIDGE_BIN_PATH],
+                stdout=logf,
+                stderr=logf,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+                env=env,
+                cwd=os.path.dirname(BRIDGE_BIN_PATH) or None,
+            )
+        return True, "bridge spawned"
+    except OSError as e:
+        return False, f"failed to spawn bridge: {e}"
+
+
+def ensure_bridge(timeout_s: float = 20.0) -> Dict[str, Any]:
+    """Garantiza un bridge respondiendo en el puerto configurado.
+
+    Health check primero: si /api/status responde, se ADOPTA ese bridge (la validacion
+    previa que evita conexiones duplicadas). Si no responde, lanza el binario y espera
+    a que la API sirva. Devuelve {"ok", "spawned", "status", "message"}.
+    """
+    import time as _time
+
+    st = get_status()
+    if st.get("success"):
+        return {"ok": True, "spawned": False, "status": st}
+    ok, msg = spawn_bridge()
+    if not ok:
+        return {"ok": False, "spawned": False, "status": {}, "message": msg}
+    deadline = _time.monotonic() + timeout_s
+    while _time.monotonic() < deadline:
+        _time.sleep(0.5)
+        st = get_status()
+        if st.get("success"):
+            return {"ok": True, "spawned": True, "status": st}
+    return {
+        "ok": False,
+        "spawned": True,
+        "status": {},
+        "message": f"bridge spawned pero /api/status no respondio en {timeout_s:.0f}s (ver bridge.log del store)",
+    }
+
+
+def acquire_login_qr(max_recycles: int = 2, qr_wait_s: float = 15.0) -> Dict[str, Any]:
+    """Consigue un QR de login vigente, validando/reciclando la sesion segun haga falta.
+
+    Maquina de estados sobre /api/status y /api/qr:
+      - logged_in && connected  -> sesion valida existente: NO se genera QR.
+      - logged_in && needs_qr   -> sesion zombie (device invalidado remotamente): este
+        proceso nunca emitira QR; se recicla (shutdown ordenado + respawn). whatsmeow
+        borra la sesion rota en ese ciclo y el respawn siguiente entra en modo QR.
+      - !logged_in              -> modo QR: esperar el primer codigo y devolverlo; si el
+        canal se agoto ("timeout"), reciclar para obtener un canal fresco.
+    """
+    import time as _time
+
+    ensured = ensure_bridge()
+    if not ensured["ok"]:
+        return {"ok": False, "message": ensured.get("message", "bridge unavailable")}
+
+    for _ in range(max_recycles + 1):
+        # Fase 1: dejar que el estado se asiente (un bridge con sesion valida tarda unos
+        # segundos en conectar; uno zombie tarda lo mismo en descubrir el 401 remoto).
+        st: Dict[str, Any] = ensured["status"]
+        deadline = _time.monotonic() + qr_wait_s
+        recycle = False
+        while _time.monotonic() < deadline:
+            if st.get("success"):
+                if st.get("logged_in") and st.get("connected"):
+                    return {"ok": True, "logged_in": True, "status": st}
+                if st.get("logged_in") and st.get("needs_qr"):
+                    recycle = True  # zombie: hay device guardado pero fue invalidado
+                    break
+                if not st.get("logged_in"):
+                    break  # modo QR: pasar a esperar el codigo
+            _time.sleep(1.0)
+            st = get_status()
+
+        # Fase 2: en modo QR, esperar a que el canal emita el codigo vigente.
+        if not recycle:
+            deadline = _time.monotonic() + qr_wait_s
+            while _time.monotonic() < deadline:
+                qr = get_qr()
+                if qr.get("qr_status") == "logged_in":
+                    return {"ok": True, "logged_in": True, "status": get_status()}
+                if qr.get("qr_status") == "active":
+                    return {"ok": True, "logged_in": False, "qr": qr}
+                if qr.get("qr_status") == "timeout":
+                    break  # canal agotado: reciclar para un canal fresco
+                _time.sleep(1.0)
+
+        shutdown_bridge()
+        _time.sleep(2.0)
+        ensured = ensure_bridge()
+        if not ensured["ok"]:
+            return {"ok": False, "message": ensured.get("message", "bridge unavailable")}
+
+    return {
+        "ok": False,
+        "message": "no se pudo obtener un QR de login tras reciclar el bridge; ver bridge.log del store",
+    }

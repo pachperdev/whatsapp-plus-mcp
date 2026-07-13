@@ -1,7 +1,9 @@
-"""Definicion de las 62 tools MCP (@mcp.tool). Wrappers delgados sobre db/ bridge."""
+"""Definicion de las tools MCP (@mcp.tool). Wrappers delgados sobre db/ bridge."""
+import base64
+import os
 from typing import Any, Dict, List, Optional
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 from mcp.types import ToolAnnotations
 
 from whatsapp_mcp import bridge, db
@@ -843,3 +845,89 @@ def get_unread_chats() -> List[Dict[str, Any]]:
             "last_time": c.get("last_time", ""),
         })
     return out
+
+
+# --- Login autogestionado (plug-and-play): el MCP gestiona el bridge y el QR ---
+
+def _open_image_preview(png_bytes: bytes) -> str:
+    """Escribe el PNG a un archivo temporal y lo abre con el visor del SO.
+
+    Devuelve la ruta escrita, o "" si no se pudo abrir (headless, SO sin visor, etc.);
+    el QR inline en la conversacion sigue disponible como fallback.
+    """
+    import subprocess
+    import sys
+    import tempfile
+
+    path = os.path.join(tempfile.gettempdir(), "whatsapp_login_qr.png")
+    try:
+        with open(path, "wb") as f:
+            f.write(png_bytes)
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        elif sys.platform.startswith("linux"):
+            subprocess.Popen(["xdg-open", path])
+        elif sys.platform.startswith("win"):
+            os.startfile(path)  # type: ignore[attr-defined]
+        else:
+            return ""
+        return path
+    except OSError:
+        return ""
+
+
+@mcp.tool(annotations=_WRITE_IDEMPOTENT)
+def login_with_qr(open_preview: bool = True) -> List[Any]:
+    """Connect to WhatsApp, reusing the existing session or guiding a QR login.
+
+    Self-managing: verifies the bridge process (adopts a healthy one, spawns or recycles
+    it if needed — never duplicates connections), validates the current session, and only
+    generates a QR when there is no valid session. The QR is returned INLINE as an image
+    in the conversation; with open_preview=True it is also opened in the OS image viewer
+    so the user can scan it comfortably.
+
+    QR codes rotate every ~30s: if the user reports it expired, call this tool again to
+    get the current one. After the user scans, call get_status to confirm login.
+
+    Args:
+        open_preview: Also open the QR in the local image viewer (default True)
+    """
+    result = bridge.acquire_login_qr()
+    if not result.get("ok"):
+        return [f"❌ No se pudo iniciar el login: {result.get('message', 'error desconocido')}"]
+    if result.get("logged_in"):
+        st = result.get("status", {})
+        return [
+            "✅ Sesión válida existente: conectado como "
+            f"{st.get('jid', 'desconocido')}. No hace falta escanear QR."
+        ]
+
+    qr = result["qr"]
+    png_bytes = base64.b64decode(qr["png_base64"])
+    contents: List[Any] = []
+    preview_note = ""
+    if open_preview:
+        path = _open_image_preview(png_bytes)
+        preview_note = (
+            f" También quedó abierto en tu visor de imágenes ({path})."
+            if path
+            else " (No se pudo abrir el visor local; usa la imagen de la conversación.)"
+        )
+    contents.append(Image(data=png_bytes, format="png"))
+    contents.append(
+        "📱 Escanea este QR desde WhatsApp → Ajustes → Dispositivos vinculados → "
+        f"Vincular un dispositivo. Expira ~{qr.get('expires_at', 'en <1 min')}; si expira, "
+        f"vuelve a llamar login_with_qr para obtener el vigente.{preview_note} "
+        "Tras escanear, confirma con get_status."
+    )
+    return contents
+
+
+@mcp.tool(annotations=_DESTRUCTIVE)
+def shutdown_bridge() -> Dict[str, Any]:
+    """Gracefully shut down the WhatsApp bridge process (the session is preserved).
+
+    The next tool that needs the bridge (e.g. login_with_qr) will start it again. Useful
+    to recycle a misbehaving bridge without touching the WhatsApp session/credentials.
+    """
+    return bridge.shutdown_bridge()

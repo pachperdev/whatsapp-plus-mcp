@@ -10,7 +10,7 @@ A Model Context Protocol (MCP) server for a **personal WhatsApp account**, built
 
 2. **Python MCP Server** (`whatsapp-mcp-server/`): the `whatsapp_mcp` package (`config` → `models` → `db` → `bridge` → `tools`/`prompts` → `server`) exposes WhatsApp functionality as MCP tools. **Reads** come straight from the SQLite DB (`db.py`); **writes/actions** go to the Go bridge over HTTP (`bridge.py`).
 
-> **This fork is far ahead of upstream.** It exposes **63 MCP tools** (upstream had ~12). See `CHANGELOG.md` for the milestone history. Commits and code comments are written in Spanish.
+> **This fork is far ahead of upstream.** It exposes **65 MCP tools** (upstream had ~12). See `CHANGELOG.md` for the milestone history. Commits and code comments are written in Spanish.
 
 ## Architecture
 
@@ -62,7 +62,7 @@ uv run main.py                 # expects the bridge running + DB at ../whatsapp-
 ```
 Dependencies (`pyproject.toml`): `mcp[cli]`, `requests`, `httpx`; Python `>=3.11`. The server uses a global `requests.Session()` for keep-alive pooling to the bridge.
 
-## MCP Tools (63)
+## MCP Tools (65)
 
 Full list and signatures live in `whatsapp-mcp-server/whatsapp_mcp/tools.py` (`@mcp.tool()` decorators). Grouped by area:
 - **Read/search**: `search_contacts`, `list_all_contacts`, `refresh_contacts`, `list_messages`, `list_chats`, `get_chat`, `get_direct_chat_by_contact`, `get_contact_chats`, `get_last_interaction`, `get_message_context`, `get_unread_chats`, `list_groups`.
@@ -72,10 +72,13 @@ Full list and signatures live in `whatsapp-mcp-server/whatsapp_mcp/tools.py` (`@
 - **Groups**: `create_group`, `update_group_participants`, `get_group_participants`, `get_group_invite_link` (pure read) / `reset_group_invite_link` (revokes + regenerates), `join_group`, `leave_group`, `set_group_name/topic/description/announce/locked/photo`, join-approval + join-request tools, invite-link info/join.
 - **Contacts/identity/presence**: `check_whatsapp`, `get_user_info`, `get_user_devices`, `get_profile_picture`, `get_business_profile`, `block_contact`/`unblock_contact`, `set/subscribe/get_presence`.
 - **Account/session**: `get_status`, `set_status_message`, `set_default_disappearing`, `logout`.
+- **Self-managed login (supervisor)**: `login_with_qr` (validates/reuses an existing session, spawns or recycles the bridge as needed, and returns the QR **inline as an MCP image** — plus optional OS image-viewer preview via `open_preview`), `shutdown_bridge` (graceful stop; session preserved). The Python server supervises the Go bridge: it adopts a healthy running bridge (never duplicates connections), spawns the binary (`WHATSAPP_BRIDGE_BIN`) when missing, and recycles zombie sessions via `/api/shutdown` + respawn (`bridge.ensure_bridge` / `bridge.acquire_login_qr`).
 
 ### Key bridge HTTP endpoints
 - `POST /api/send`, `/api/download` — messages and media (as in upstream).
 - `GET /api/status` — connection/login/ban state (`temp_banned` with code/reason/expires, `needs_qr`, last connect failure). Backs `get_status`.
+- `GET /api/qr` — login-QR state machine (`logged_in|none|active|success|timeout` + raw code + `png_base64`). The HTTP server now starts BEFORE pairing so this route exists during QR mode.
+- `POST /api/shutdown` — graceful shutdown (same path as SIGTERM); lets the supervisor recycle the process without OS signals.
 - Plus one `/api/<name>` per action tool above, each `withAuth`-wrapped.
 
 ## Media Handling

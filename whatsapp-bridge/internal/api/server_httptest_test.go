@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -27,14 +28,14 @@ const (
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
 	svc := wa.NewService(nil, nil, nil, "", nil)
-	return NewServer(svc, nil, nil, testToken)
+	return NewServer(svc, nil, nil, testToken, nil)
 }
 
 func newBannedTestServer(t *testing.T) http.Handler {
 	t.Helper()
 	svc := wa.NewService(nil, nil, nil, "", nil)
 	svc.OnTempBan(104, "spam", time.Hour)
-	return NewServer(svc, nil, nil, testToken)
+	return NewServer(svc, nil, nil, testToken, nil)
 }
 
 // doReq lanza un POST contra el handler. Con token=="" no manda X-Auth-Token.
@@ -139,5 +140,101 @@ func TestSend_ErrorRespondsJSON(t *testing.T) {
 	}
 	if got["success"] != false {
 		t.Fatalf("/api/send error: success=%v, want false", got["success"])
+	}
+}
+
+// --- /api/qr y /api/shutdown (autogestión del login para el supervisor MCP) ---
+
+// doGet lanza un GET autenticado contra el handler.
+func doGet(t *testing.T, h http.Handler, path, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	if token != "" {
+		req.Header.Set("X-Auth-Token", token)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestQR_SinCodigoActivo(t *testing.T) {
+	h := newTestServer(t)
+	rec := doGet(t, h, "/api/qr", testToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Success  bool   `json:"success"`
+		QRStatus string `json:"qr_status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body no es JSON: %v", err)
+	}
+	if !got.Success || got.QRStatus != "none" {
+		t.Fatalf("got %+v, want success=true qr_status=none", got)
+	}
+}
+
+func TestQR_CodigoActivoDevuelvePNG(t *testing.T) {
+	svc := wa.NewService(nil, nil, nil, "", nil)
+	svc.SetQRCode("test-code-123", 60*time.Second)
+	h := NewServer(svc, nil, nil, testToken, nil)
+	rec := doGet(t, h, "/api/qr", testToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Success   bool   `json:"success"`
+		QRStatus  string `json:"qr_status"`
+		Code      string `json:"code"`
+		PNGBase64 string `json:"png_base64"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body no es JSON: %v", err)
+	}
+	if got.QRStatus != "active" || got.Code != "test-code-123" {
+		t.Fatalf("got %+v, want qr_status=active code=test-code-123", got)
+	}
+	png, err := base64.StdEncoding.DecodeString(got.PNGBase64)
+	if err != nil {
+		t.Fatalf("png_base64 no decodifica: %v", err)
+	}
+	if len(png) < 8 || string(png[1:4]) != "PNG" {
+		t.Fatalf("payload no tiene magic PNG (len=%d)", len(png))
+	}
+}
+
+func TestQR_SoloGET(t *testing.T) {
+	h := newTestServer(t)
+	rec := doReq(t, h, "/api/qr", testToken, "{}")
+	wantErrJSON(t, rec, http.StatusMethodNotAllowed, "Method not allowed")
+}
+
+func TestShutdown_DisparaCallback(t *testing.T) {
+	svc := wa.NewService(nil, nil, nil, "", nil)
+	done := make(chan struct{})
+	h := NewServer(svc, nil, nil, testToken, func() { close(done) })
+	rec := doReq(t, h, "/api/shutdown", testToken, "{}")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdownFn no fue invocado")
+	}
+}
+
+func TestShutdown_SoloPOST(t *testing.T) {
+	h := newTestServer(t)
+	rec := doGet(t, h, "/api/shutdown", testToken)
+	wantErrJSON(t, rec, http.StatusMethodNotAllowed, "Method not allowed")
+}
+
+func TestShutdown_SinCallbackNoRevienta(t *testing.T) {
+	h := newTestServer(t) // shutdownFn nil
+	rec := doReq(t, h, "/api/shutdown", testToken, "{}")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
 	}
 }

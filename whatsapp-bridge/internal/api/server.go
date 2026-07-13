@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	qrcode "github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
@@ -156,8 +158,52 @@ func respondOK(w http.ResponseWriter, extra map[string]interface{}) {
 // NewServer registra todas las rutas REST del bridge sobre un mux propio (no el
 // DefaultServeMux), cada una envuelta en withAuth con el token compartido, y devuelve el
 // handler resultante. Los handlers capturan svc/client/st por closure.
-func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore, token string) http.Handler {
+func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore, token string, shutdownFn func()) http.Handler {
 	mux := http.NewServeMux()
+
+	// Handler: estado del login por QR. Publica el código vigente (crudo + PNG base64)
+	// para que el supervisor MCP lo muestre en la conversación o lo abra como imagen,
+	// sin depender del stdout del proceso. El server HTTP arranca ANTES del pairing
+	// precisamente para que esta ruta exista durante el modo QR.
+	mux.HandleFunc("/api/qr", withAuth(token, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			respondErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		if client != nil && client.Store != nil && client.Store.ID != nil && client.IsLoggedIn() {
+			respondOK(w, map[string]interface{}{"qr_status": "logged_in"})
+			return
+		}
+		status, code, expiresAt := svc.QRInfo()
+		resp := map[string]interface{}{"qr_status": status}
+		if status == "active" {
+			png, err := qrcode.Encode(code, qrcode.Medium, 512)
+			if err != nil {
+				respondErr(w, http.StatusInternalServerError, fmt.Sprintf("failed to render QR: %v", err))
+				return
+			}
+			resp["code"] = code
+			resp["png_base64"] = base64.StdEncoding.EncodeToString(png)
+			resp["expires_at"] = expiresAt.Format(time.RFC3339)
+		}
+		respondOK(w, resp)
+	}))
+
+	// Handler: apagado ordenado a pedido del supervisor. Permite reciclar el proceso
+	// (p.ej. sesión zombie que necesita re-login por QR) sin señales de SO ni matar
+	// procesos ajenos: responde y dispara el mismo camino que SIGTERM.
+	mux.HandleFunc("/api/shutdown", withAuth(token, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			respondErr(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		respondOK(w, map[string]interface{}{"message": "shutting down"})
+		if shutdownFn != nil {
+			go shutdownFn()
+		}
+	}))
 
 	// Handler for sending messages
 	mux.HandleFunc("/api/send", withAuth(token, func(w http.ResponseWriter, r *http.Request) {

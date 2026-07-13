@@ -135,6 +135,12 @@ type botStatus struct {
 	loggedOutReason    string
 	lastConnectFailure string
 	lastConnectFailAt  time.Time
+
+	// Estado del flujo de login por QR, publicado en /api/qr para que el supervisor
+	// (server MCP) pueda mostrar el codigo sin raspar el stdout del proceso.
+	qrStatus    string // "" (=none) | "active" | "success" | "timeout"
+	qrCode      string
+	qrExpiresAt time.Time
 }
 
 func (s *botStatus) onConnected() {
@@ -244,6 +250,40 @@ func (s *Service) IsTempBanned() (bool, string) { return s.status.isTempBanned()
 
 // StatusSnapshot arma el estado actual para /api/status.
 func (s *Service) StatusSnapshot() map[string]interface{} { return s.status.snapshot(s.Client) }
+
+// SetQRCode publica un código QR de login vigente (con su ventana de validez) para /api/qr.
+func (s *Service) SetQRCode(code string, timeout time.Duration) {
+	s.status.mu.Lock()
+	defer s.status.mu.Unlock()
+	s.status.qrStatus = "active"
+	s.status.qrCode = code
+	s.status.qrExpiresAt = time.Now().Add(timeout)
+}
+
+// SetQRStatus marca el desenlace del flujo QR ("success", "timeout") y limpia el código:
+// un código consumido o vencido no debe volver a mostrarse.
+func (s *Service) SetQRStatus(status string) {
+	s.status.mu.Lock()
+	defer s.status.mu.Unlock()
+	s.status.qrStatus = status
+	s.status.qrCode = ""
+	s.status.qrExpiresAt = time.Time{}
+}
+
+// QRInfo devuelve el estado del flujo QR: ("none"|"active"|"success"|"timeout", código, expiración).
+// Si el código activo ya venció, degrada a "timeout" (el supervisor debe reiniciar el login).
+func (s *Service) QRInfo() (string, string, time.Time) {
+	s.status.mu.RLock()
+	defer s.status.mu.RUnlock()
+	status := s.status.qrStatus
+	if status == "" {
+		status = "none"
+	}
+	if status == "active" && time.Now().After(s.status.qrExpiresAt) {
+		return "timeout", "", s.status.qrExpiresAt
+	}
+	return status, s.status.qrCode, s.status.qrExpiresAt
+}
 
 // OnPresenceEvent actualiza la presencia (online/last-seen) de un contacto.
 func (s *Service) OnPresenceEvent(from types.JID, unavailable bool, lastSeen time.Time) {

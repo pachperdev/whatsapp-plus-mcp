@@ -33,3 +33,16 @@ WHATSAPP_API_BASE_URL = os.environ.get("WHATSAPP_BRIDGE_URL", "http://localhost:
 BRIDGE_TOKEN_PATH = os.environ.get(
     "WHATSAPP_BRIDGE_TOKEN_FILE", os.path.join(_STORE_DIR, ".bridge_token")
 )
+
+# --- Modo supervisor (login autogestionado / plug-and-play) ---
+# Directorio del store que se le pasa al bridge lanzado por el supervisor. Respeta la
+# misma env var que entiende el bridge, para que ambos procesos apunten al mismo store.
+STORE_DIR = os.environ.get("WHATSAPP_STORE_DIR", os.path.normpath(_STORE_DIR))
+# Binario del bridge. Default: el compilado junto al repo (`go build -o whatsapp-bridge`);
+# el empaquetado plug-and-play (.mcpb) lo apunta a su binario precompilado.
+BRIDGE_BIN_PATH = os.environ.get(
+    "WHATSAPP_BRIDGE_BIN",
+    os.path.normpath(os.path.join(_STORE_DIR, "..", "whatsapp-bridge")),
+)
+# Log del bridge cuando lo lanza el supervisor (su stdout deja de ser una terminal).
+BRIDGE_LOG_PATH = os.environ.get("WHATSAPP_BRIDGE_LOG", os.path.join(STORE_DIR, "bridge.log"))
