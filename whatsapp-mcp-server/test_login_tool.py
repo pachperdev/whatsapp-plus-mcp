@@ -42,10 +42,14 @@ async def test_login_with_qr_serializa_imagen_inline(monkeypatch):
     assert ImageContent in types_found, f"sin ImageContent: {types_found}"
     assert TextContent in types_found, f"sin TextContent: {types_found}"
     # Clientes que colapsan los tool results (Claude Desktop/web): el asistente debe
-    # poder re-mostrar el QR — exige el data URI + la instruccion de artifact.
+    # poder re-mostrar el QR RAPIDO. Un data URI obliga al modelo a transcribir ~3000
+    # tokens (>1 min, el codigo expira); la plantilla genera el QR en el navegador a
+    # partir del codigo crudo (~270 chars) en segundos.
     textos = " ".join(c.text for c in contents if isinstance(c, TextContent))
-    assert "data:image/png;base64," in textos, "falta el data URI para re-mostrar el QR"
+    assert "data:image/png;base64," not in textos, "el data URI es demasiado lento de transcribir"
     assert "artifact" in textos.lower(), "falta la instruccion de artifact para el asistente"
+    assert "qrcodejs" in textos or "qrcode.min.js" in textos, "falta la plantilla con la libreria QR"
+    assert '"test"' in textos or "'test'" in textos or ">test<" in textos or "text: \"test\"" in textos or "test" in textos, "falta el codigo crudo interpolado"
 
 
 @pytest.mark.anyio

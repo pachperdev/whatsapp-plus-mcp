@@ -925,3 +925,59 @@ def acquire_login_qr(max_recycles: int = 2, qr_wait_s: float = 15.0) -> Dict[str
         "ok": False,
         "message": "no se pudo obtener un QR de login tras reciclar el bridge; ver bridge.log del store",
     }
+
+
+# --- Watcher de rotación del QR (refresco proactivo de la Vista Previa) ---
+#
+# Los códigos QR de login rotan cada ~30-60 s. Este watcher (thread daemon del server
+# MCP) consulta /api/qr y, en cada rotación, entrega el PNG nuevo al callback para que
+# la imagen del visor local se regenere sola — el usuario siempre ve un código vigente
+# sin pedirle nada al asistente. Termina al detectar login, canal muerto o timeout.
+
+_qr_watcher_lock = __import__("threading").Lock()
+_qr_watcher_running = False
+
+
+def start_qr_preview_watcher(
+    refresh_fn, initial_code: str = "", poll_interval_s: float = 2.5, max_seconds: float = 240.0
+) -> bool:
+    """Arranca (si no hay otro) un watcher que llama refresh_fn(png_bytes) en cada rotación.
+
+    refresh_fn recibe los bytes PNG del código NUEVO. Devuelve False si ya hay un watcher
+    activo (nunca hay dos). El thread es daemon: muere con el server MCP.
+    """
+    import base64 as _b64
+    import threading
+    import time as _time
+
+    global _qr_watcher_running
+    with _qr_watcher_lock:
+        if _qr_watcher_running:
+            return False
+        _qr_watcher_running = True
+
+    def _loop() -> None:
+        global _qr_watcher_running
+        last_code = initial_code
+        deadline = _time.monotonic() + max_seconds
+        try:
+            while _time.monotonic() < deadline:
+                _time.sleep(poll_interval_s)
+                q = get_qr()
+                status = q.get("qr_status")
+                if status != "active":
+                    return  # logged_in/success (escaneado), timeout/none (canal reciclado)
+                code = q.get("code", "")
+                png_b64 = q.get("png_base64", "")
+                if code and code != last_code and png_b64:
+                    last_code = code
+                    try:
+                        refresh_fn(_b64.b64decode(png_b64))
+                    except Exception as e:  # el preview es best-effort; no matar el loop
+                        logger.warning(f"qr preview refresh fallo: {e}")
+        finally:
+            with _qr_watcher_lock:
+                _qr_watcher_running = False
+
+    threading.Thread(target=_loop, daemon=True, name="qr-preview-watcher").start()
+    return True

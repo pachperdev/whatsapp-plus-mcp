@@ -854,11 +854,13 @@ def get_unread_chats() -> List[Dict[str, Any]]:
 
 # --- Login autogestionado (plug-and-play): el MCP gestiona el bridge y el QR ---
 
-def _open_image_preview(png_bytes: bytes) -> str:
+def _open_image_preview(png_bytes: bytes, foreground: bool = True) -> str:
     """Escribe el PNG a un archivo temporal y lo abre con el visor del SO.
 
-    Devuelve la ruta escrita, o "" si no se pudo abrir (headless, SO sin visor, etc.);
-    el QR inline en la conversacion sigue disponible como fallback.
+    Con foreground=False (refrescos del watcher de rotación) reescribe el MISMO archivo
+    y re-abre sin robar el foco: el visor recarga la imagen y el usuario que está
+    escaneando ve siempre el código vigente. Devuelve la ruta escrita, o "" si no se
+    pudo abrir (headless, SO sin visor, etc.); el QR inline sigue como fallback.
     """
     import subprocess
     import sys
@@ -869,7 +871,7 @@ def _open_image_preview(png_bytes: bytes) -> str:
         with open(path, "wb") as f:
             f.write(png_bytes)
         if sys.platform == "darwin":
-            subprocess.Popen(["open", path])
+            subprocess.Popen(["open", "-g", path] if not foreground else ["open", path])
         elif sys.platform.startswith("linux"):
             subprocess.Popen(["xdg-open", path])
         elif sys.platform.startswith("win"):
@@ -920,26 +922,55 @@ def login_with_qr(open_preview: bool = True) -> List[Any]:
             if path
             else " (No se pudo abrir el visor local; usa la imagen de la conversación.)"
         )
+        if path:
+            # Rotación proactiva: el watcher regenera el archivo del preview con cada
+            # código nuevo hasta que el usuario escanee (o el canal muera).
+            bridge.start_qr_preview_watcher(
+                lambda png: _open_image_preview(png, foreground=False),
+                initial_code=qr.get("code", ""),
+            )
     contents.append(Image(data=png_bytes, format="png"))
     contents.append(
         "📱 Escanea este QR desde WhatsApp → Ajustes → Dispositivos vinculados → "
-        f"Vincular un dispositivo. Expira ~{qr.get('expires_at', 'en <1 min')}; si expira, "
-        f"vuelve a llamar login_with_qr para obtener el vigente.{preview_note} "
+        "Vincular un dispositivo. Los códigos rotan cada ~30-60 s; la imagen del visor "
+        f"local se actualiza sola con cada rotación.{preview_note} "
         "Tras escanear, confirma con get_status."
     )
     # Clientes que colapsan los tool results (Claude Desktop / claude.ai): la imagen de
-    # arriba no queda a la vista en el chat. Instrucción + data URI para que el asistente
-    # re-muestre el QR de la forma nativa de su interfaz (artifact HTML).
+    # arriba no queda a la vista en el chat. NO pasar la imagen como data URI: el modelo
+    # tardaría >1 min transcribiendo ~3000 tokens de base64 y el código expiraría (visto
+    # en pruebas reales). En su lugar: el CÓDIGO crudo (~270 chars) + plantilla que
+    # genera el QR en el navegador (qrcodejs desde cdnjs, permitido en artifacts) con
+    # cuenta regresiva de expiración. El asistente la escribe en segundos.
+    artifact_html = f"""<!doctype html><html><head><meta charset="utf-8"><title>WhatsApp QR</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>body{{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#f7f7f7;font-family:system-ui}}#qr{{background:#fff;padding:20px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.12)}}#exp{{color:#555}}</style>
+</head><body>
+<div id="qr"></div>
+<b>WhatsApp → Ajustes → Dispositivos vinculados → Vincular un dispositivo</b>
+<div id="exp"></div>
+<script>
+var CODE = "{qr["code"]}";
+var EXPIRES = "{qr.get("expires_at", "")}";
+new QRCode(document.getElementById("qr"), {{text: CODE, width: 380, height: 380, correctLevel: QRCode.CorrectLevel.M}});
+var t = setInterval(function () {{
+  var s = Math.max(0, Math.round((new Date(EXPIRES) - new Date()) / 1000));
+  document.getElementById("exp").textContent = s > 0 ? ("El código expira en ~" + s + " s") : "⚠️ Código expirado — pídele a Claude que muestre el nuevo";
+  if (s <= 0) clearInterval(t);
+}}, 1000);
+</script></body></html>"""
     contents.append(
         "INSTRUCCIÓN PARA EL ASISTENTE (no la repitas literal al usuario): el usuario "
         "NECESITA VER el código QR para escanearlo. Si tu interfaz NO muestra las imágenes "
         "de los resultados de tools directamente en el chat (p. ej. Claude Desktop o "
-        "claude.ai), crea INMEDIATAMENTE un artifact HTML que muestre el QR en grande, "
-        "usando exactamente esta etiqueta:\n"
-        f'<img src="data:image/png;base64,{qr["png_base64"]}" '
-        'alt="QR de WhatsApp" style="width:min(90vw,420px);image-rendering:pixelated"/>\n'
-        "Si tu interfaz sí muestra la imagen del tool result (p. ej. Claude Code), no "
-        "hace falta el artifact."
+        "claude.ai), crea INMEDIATAMENTE — sin texto previo largo — un artifact HTML con "
+        "exactamente este contenido (genera el QR en el navegador al instante; NO uses "
+        "data URIs de imagen, son lentísimos de escribir):\n\n"
+        f"{artifact_html}\n\n"
+        "Si el usuario avisa que expiró (o el countdown llegó a 0 sin escaneo), vuelve a "
+        "llamar login_with_qr y ACTUALIZA el artifact reemplazando solo los valores de "
+        "CODE y EXPIRES — es un cambio de dos líneas, hazlo veloz. En interfaces que sí "
+        "muestran la imagen del tool result (p. ej. Claude Code) no hace falta el artifact."
     )
     return contents
 

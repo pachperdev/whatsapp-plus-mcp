@@ -107,3 +107,40 @@ def test_cascada_sin_release_ni_go_error_combinado(tmp_path, monkeypatch):
     ok, msg = bridge_mod.ensure_bridge_binary(str(tmp_path / "nope"))
     assert not ok
     assert "release: 404" in msg and "go.dev" in msg, msg
+
+
+# --- Watcher de rotación del QR (refresco proactivo de la Vista Previa) ---
+
+def test_watcher_refresca_en_cada_rotacion_y_termina_al_login(monkeypatch):
+    secuencia = [
+        {"qr_status": "active", "code": "c1", "png_base64": "cDE="},
+        {"qr_status": "active", "code": "c1", "png_base64": "cDE="},  # sin cambio
+        {"qr_status": "active", "code": "c2", "png_base64": "cDI="},  # rotó
+        {"qr_status": "logged_in"},                                     # escaneado
+    ]
+    it = iter(secuencia)
+    monkeypatch.setattr(bridge_mod, "get_qr", lambda: next(it, {"qr_status": "logged_in"}))
+    refrescos = []
+    arranco = bridge_mod.start_qr_preview_watcher(
+        lambda png: refrescos.append(png), initial_code="c1", poll_interval_s=0.01
+    )
+    assert arranco
+    import time as _t
+    for _ in range(200):
+        if not bridge_mod._qr_watcher_running:
+            break
+        _t.sleep(0.01)
+    assert not bridge_mod._qr_watcher_running, "el watcher no terminó"
+    assert refrescos == [b"p2"], f"debio refrescar solo con la rotacion: {refrescos}"
+
+
+def test_watcher_unico_a_la_vez(monkeypatch):
+    monkeypatch.setattr(bridge_mod, "get_qr", lambda: {"qr_status": "active", "code": "x", "png_base64": "eA=="})
+    a = bridge_mod.start_qr_preview_watcher(lambda p: None, initial_code="x", poll_interval_s=0.05, max_seconds=0.3)
+    b = bridge_mod.start_qr_preview_watcher(lambda p: None, initial_code="x", poll_interval_s=0.05, max_seconds=0.3)
+    assert a and not b, "no debe haber dos watchers simultaneos"
+    import time as _t
+    for _ in range(100):
+        if not bridge_mod._qr_watcher_running:
+            break
+        _t.sleep(0.01)
