@@ -10,7 +10,7 @@ Conecta tu cuenta personal de WhatsApp a Claude (o a cualquier agente compatible
 
 ## ✨ Lo que lo hace diferente
 
-- **Login autogestionado**: pide "conéctame a WhatsApp" y el plugin hace todo — lanza su propio bridge, valida si ya hay una sesión utilizable (nunca duplica conexiones), y solo si hace falta te muestra el **código QR directamente en la conversación** y lo abre en tu visor de imágenes. Escaneas y listo.
+- **Login autogestionado**: pide "conéctame a WhatsApp" y el plugin hace todo — lanza su propio bridge, valida si ya hay una sesión utilizable (nunca duplica conexiones), y solo si hace falta abre el **código QR en tu visor de imágenes** (instantáneo, se refresca solo con cada rotación) y también lo muestra en la conversación. Escaneas y listo.
 - **65 herramientas MCP**: mensajes (enviar, responder, editar, borrar, reaccionar, destacar), búsqueda e historial, grupos (crear, administrar, invitaciones), multimedia (imágenes, notas de voz, documentos, descarga), presencia, encuestas, contactos, estados de chat y gestión de sesión.
 - **Supervisor integrado**: el servidor MCP administra el ciclo de vida del bridge Go (adopta uno sano, compila el binario si falta, recicla sesiones zombie). El usuario no toca ninguna terminal.
 - **Seguridad por diseño**: API solo en loopback con token de autenticación, validación anti-exfiltración de rutas de archivos, datos siempre en tu máquina.
@@ -108,7 +108,7 @@ El agente llama a `login_with_qr` y el plugin hace el resto:
 
 1. Verifica si hay un bridge corriendo con **sesión válida** → la reutiliza (sin QR).
 2. Si no existe el binario del bridge, **descarga el precompilado** del último release (verificación SHA256; usa tu token de `gh` para el repo privado) o, como fallback, lo compila con Go.
-3. Si hace falta login, te muestra el **QR en la conversación** y lo abre en tu visor de imágenes.
+3. Si hace falta login, abre el **QR en tu visor de imágenes** (canal principal: instantáneo y auto-refrescado en cada rotación) y también lo muestra en la conversación.
 4. Escaneas desde WhatsApp → **Ajustes → Dispositivos vinculados → Vincular un dispositivo**.
 
 La sesión persiste ~20 días; después WhatsApp puede pedir re-vincular (mismo flujo, un escaneo).
