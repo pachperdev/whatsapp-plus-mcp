@@ -128,3 +128,26 @@ func TestIsAppStateConflict(t *testing.T) {
 		})
 	}
 }
+
+func TestParseInviteCode(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"solo codigo", "CsTu0VhSdCD3EEoFemKxzM", "CsTu0VhSdCD3EEoFemKxzM"},
+		{"link clasico", "https://chat.whatsapp.com/CsTu0VhSdCD3EEoFemKxzM", "CsTu0VhSdCD3EEoFemKxzM"},
+		{"link con query (formato 2026)", "https://chat.whatsapp.com/CsTu0VhSdCD3EEoFemKxzM?mode=gi_t", "CsTu0VhSdCD3EEoFemKxzM"},
+		{"codigo con query", "CsTu0VhSdCD3EEoFemKxzM?mode=gi_t", "CsTu0VhSdCD3EEoFemKxzM"},
+		{"link con fragment", "https://chat.whatsapp.com/CsTu0VhSdCD3EEoFemKxzM#x", "CsTu0VhSdCD3EEoFemKxzM"},
+		{"trailing slash", "https://chat.whatsapp.com/CsTu0VhSdCD3EEoFemKxzM/", "CsTu0VhSdCD3EEoFemKxzM"},
+		{"espacios alrededor", "  https://chat.whatsapp.com/CsTu0VhSdCD3EEoFemKxzM?mode=gi_t \n", "CsTu0VhSdCD3EEoFemKxzM"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseInviteCode(tc.in); got != tc.want {
+				t.Fatalf("parseInviteCode(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

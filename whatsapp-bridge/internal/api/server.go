@@ -47,6 +47,22 @@ func withAuth(token string, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// parseInviteCode extrae el código de invitación de un link chat.whatsapp.com (o devuelve
+// el string tal cual si ya es solo el código). Corta query string y fragment porque los
+// links reales vienen como https://chat.whatsapp.com/<code>?mode=gi_t; sin esto el server
+// rechaza el código con 400 bad-request.
+func parseInviteCode(raw string) string {
+	code := strings.TrimSpace(raw)
+	if idx := strings.IndexAny(code, "?#"); idx >= 0 {
+		code = code[:idx]
+	}
+	code = strings.TrimSuffix(code, "/")
+	if idx := strings.LastIndex(code, "/"); idx >= 0 {
+		code = code[idx+1:]
+	}
+	return code
+}
+
 // isAppStateConflict detecta el rechazo 409/LTHash del servidor al subir un patch de
 // app state: ocurre cuando el estado local quedó desincronizado (típico tras un login
 // por QR fresco, donde el servidor va varias versiones por delante del estado vacío local).
@@ -698,10 +714,7 @@ func NewServer(svc *wa.Service, client *whatsmeow.Client, st *store.MessageStore
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		code := req.Code
-		if idx := strings.LastIndex(code, "/"); idx >= 0 {
-			code = code[idx+1:] // aceptar link completo o solo el codigo
-		}
+		code := parseInviteCode(req.Code) // aceptar link completo (con ?query) o solo el codigo
 		jid, err := client.JoinGroupWithLink(context.Background(), code)
 		if err != nil {
 			respondErr(w, http.StatusInternalServerError, err.Error())
