@@ -968,11 +968,14 @@ def login_with_qr(open_preview: bool = True) -> List[Any]:
     # ~3000 tokens (>1 min, el código expira). Ambos vistos en pruebas reales.
     contents.append(
         "⚠️ ACCIÓN OBLIGATORIA AHORA, ANTES DE ESCRIBIR TEXTO AL USUARIO: crea UN artifact "
-        "HTML copiando EXACTA la plantilla que viene más abajo (una sola creación, sin "
-        "pasos intermedios), para que el código QR sea visible DENTRO del chat. Aplica en "
-        "Claude Desktop, claude.ai y toda interfaz gráfica; la ventana del visor local NO "
-        "exime. ÚNICA excepción: una terminal CLI que ya muestra la imagen de este "
-        "resultado en el chat."
+        "DE CONVERSACIÓN tipo HTML copiando EXACTA la plantilla que viene más abajo (una "
+        "sola creación, sin pasos intermedios), para que el código QR sea visible DENTRO "
+        "del chat. IMPORTANTE: usa el mecanismo nativo de artifacts de la conversación — "
+        "NO escribas archivos .html en la carpeta de trabajo ni uses herramientas de "
+        "archivos/bash para esto (los archivos se abren en un panel aparte y fallan más). "
+        "Aplica en Claude Desktop, claude.ai y toda interfaz gráfica; la ventana del visor "
+        "local NO exime. ÚNICA excepción: una terminal CLI que ya muestra la imagen de "
+        "este resultado en el chat."
     )
     contents.append(Image(data=png_bytes, format="png"))
     artifact_html = f"""<!doctype html><html><head><meta charset="utf-8"><title>WhatsApp QR</title>
