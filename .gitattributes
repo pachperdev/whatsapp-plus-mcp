@@ -1,0 +1,6 @@
+# .mcp.json es config de PROYECTO (clonar el repo y abrirlo en un cliente MCP).
+# El PLUGIN define su server en .claude-plugin/plugin.json; empaquetar ambos duplica
+# el server "whatsapp" y el validador de Claude Desktop lo rechaza ("Duplicate MCP
+# server name"). export-ignore lo excluye de todo ZIP/tarball (upload local de
+# Desktop, GitHub Sync de la Admin Console) sin sacarlo del clon git.
+.mcp.json export-ignore
