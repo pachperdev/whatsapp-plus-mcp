@@ -760,6 +760,9 @@ def get_group_info_from_invite(chat_jid: str, invite_message_id: str) -> Dict[st
     """Inspect a group from a received group-invite message, WITHOUT joining.
 
     Use the message_id of a captured group-invite message (media_type "group_invite").
+    LEGACY FORMAT: modern WhatsApp clients (2026) share invites as plain-text links, not
+    native group-invite messages — for those use join_group with the link. This tool only
+    applies to legacy invite messages still present in history or sent by old clients.
 
     Args:
         chat_jid: The chat JID where the invite message is
@@ -772,7 +775,9 @@ def join_group_with_invite(chat_jid: str, invite_message_id: str) -> Dict[str, A
     """Join a group using a received group-invite message (not a chat.whatsapp.com link).
 
     Use the message_id of a captured group-invite message (media_type "group_invite"). For
-    chat.whatsapp.com links use join_group instead.
+    chat.whatsapp.com links use join_group instead. LEGACY FORMAT: modern WhatsApp clients
+    (2026) share invites as plain-text links (route those to join_group); this tool only
+    applies to legacy native invite messages.
 
     Args:
         chat_jid: The chat JID where the invite message is
