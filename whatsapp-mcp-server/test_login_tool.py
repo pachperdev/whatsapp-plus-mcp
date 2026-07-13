@@ -46,6 +46,14 @@ async def test_login_with_qr_serializa_imagen_inline(monkeypatch):
     # tokens (>1 min, el codigo expira); la plantilla genera el QR en el navegador a
     # partir del codigo crudo (~270 chars) en segundos.
     textos = " ".join(c.text for c in contents if isinstance(c, TextContent))
+    # Determinismo de la instruccion: la orden del artifact debe ser el PRIMER contenido
+    # del resultado (primacia) y debe haber recordatorio al cierre (recencia). Con la
+    # orden al final, el modelo a veces narraba sin crear el artifact (visto en Desktop).
+    text_contents = [c.text for c in contents if isinstance(c, TextContent)]
+    assert "artifact" in text_contents[0].lower() and "ACCI" in text_contents[0], (
+        "la orden del artifact debe abrir el resultado"
+    )
+    assert "RECUERDA" in text_contents[-1], "falta el recordatorio de cierre"
     assert "data:image/png;base64," not in textos, "el data URI es demasiado lento de transcribir"
     assert "artifact" in textos.lower(), "falta la instruccion de artifact para el asistente"
     assert "qrcodejs" in textos or "qrcode.min.js" in textos, "falta la plantilla con la libreria QR"

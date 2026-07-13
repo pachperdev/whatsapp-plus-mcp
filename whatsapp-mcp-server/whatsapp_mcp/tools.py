@@ -938,19 +938,23 @@ def login_with_qr(open_preview: bool = True) -> List[Any]:
                 lambda png: _open_image_preview(png, foreground=False),
                 initial_code=qr.get("code", ""),
             )
-    contents.append(Image(data=png_bytes, format="png"))
+    # Clientes que colapsan los tool results (Claude Desktop / claude.ai): la imagen no
+    # queda a la vista en el chat y el asistente debe re-mostrarla como artifact. La
+    # ORDEN va como PRIMER contenido del resultado (primacía) con recordatorio al cierre
+    # (recencia): con la orden solo al final, el modelo a veces narraba sin crear el
+    # artifact (visto en Desktop). NO pasar la imagen como data URI: el modelo tardaría
+    # >1 min transcribiendo ~3000 tokens de base64 y el código expiraría (visto en
+    # pruebas reales). En su lugar: el CÓDIGO crudo (~270 chars) + plantilla que genera
+    # el QR en el navegador (qrcodejs desde cdnjs, permitido en artifacts).
     contents.append(
-        "📱 Escanea este QR desde WhatsApp → Ajustes → Dispositivos vinculados → "
-        "Vincular un dispositivo. Los códigos rotan cada ~30-60 s; la imagen del visor "
-        f"local se actualiza sola con cada rotación.{preview_note} "
-        "Tras escanear, confirma con get_status."
+        "⚠️ ACCIÓN OBLIGATORIA ANTES DE ESCRIBIR CUALQUIER TEXTO AL USUARIO: crea (o "
+        "actualiza, si ya hiciste uno en modo carga) un artifact HTML con la plantilla "
+        "que viene más abajo en este mismo resultado, para que el código QR sea visible "
+        "DENTRO del chat. Esto aplica SIEMPRE — Claude Desktop, claude.ai y cualquier "
+        "interfaz gráfica; la ventana del visor local NO exime. ÚNICA excepción: una "
+        "terminal CLI que ya muestra la imagen de este resultado en el chat."
     )
-    # Clientes que colapsan los tool results (Claude Desktop / claude.ai): la imagen de
-    # arriba no queda a la vista en el chat. NO pasar la imagen como data URI: el modelo
-    # tardaría >1 min transcribiendo ~3000 tokens de base64 y el código expiraría (visto
-    # en pruebas reales). En su lugar: el CÓDIGO crudo (~270 chars) + plantilla que
-    # genera el QR en el navegador (qrcodejs desde cdnjs, permitido en artifacts) con
-    # cuenta regresiva de expiración. El asistente la escribe en segundos.
+    contents.append(Image(data=png_bytes, format="png"))
     artifact_html = f"""<!doctype html><html><head><meta charset="utf-8"><title>WhatsApp QR</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>body{{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#f7f7f7;font-family:system-ui}}#qr{{background:#fff;padding:20px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.12);min-width:380px;min-height:380px;display:flex;align-items:center;justify-content:center}}#exp{{color:#555}}
@@ -977,24 +981,23 @@ if (CODE) {{
 }}
 </script></body></html>"""
     contents.append(
-        "INSTRUCCIÓN OBLIGATORIA PARA EL ASISTENTE (no la repitas literal al usuario): "
-        "en Claude Desktop, claude.ai o cualquier interfaz que NO muestre las imágenes de "
-        "los tool results en el chat, tu PRIMERA acción AHORA es crear (o actualizar, si "
-        "ya hiciste uno en modo carga) un artifact HTML con el contenido exacto de abajo. "
-        "NO es opcional y NO basta con la ventana del visor local: el usuario exige ver "
-        "el QR también dentro del chat. No escribas texto antes del artifact. NO uses "
-        "data URIs de imagen (tardan minutos y el código expira); esta plantilla genera "
-        "el QR en el navegador al instante:\n\n"
+        "PLANTILLA EXACTA DEL ARTIFACT (genera el QR en el navegador al instante; NO uses "
+        "data URIs de imagen, tardan minutos en escribirse y el código expira):\n\n"
         f"{artifact_html}\n\n"
         "ROTACIÓN: si el countdown del artifact llega a 0, o el usuario dice que expiró, "
-        "o pasó ~1 minuto sin confirmación de escaneo, tu siguiente acción es llamar "
-        "login_with_qr de nuevo y ACTUALIZAR el artifact reemplazando SOLO los valores "
-        "de CODE y EXPIRES (dos líneas, hazlo sin anunciarlo). Tras el escaneo, confirma "
-        "con get_status. TIP de velocidad para futuros logins: puedes crear este mismo "
-        "artifact ANTES de llamar login_with_qr dejando CODE=\"\" y EXPIRES=\"\" (muestra "
-        "una pantalla de carga con las instrucciones) y luego solo actualizar esos dos "
-        "valores con el resultado. Únicamente en interfaces que sí muestran la imagen del "
-        "tool result en el chat (p. ej. Claude Code CLI) puedes omitir el artifact."
+        "o pasó ~1 minuto sin confirmación de escaneo, llama login_with_qr de nuevo y "
+        "ACTUALIZA el artifact reemplazando SOLO los valores de CODE y EXPIRES (dos "
+        "líneas, hazlo sin anunciarlo). Tras el escaneo, confirma con get_status. TIP de "
+        "velocidad para futuros logins: puedes crear este mismo artifact ANTES de llamar "
+        "login_with_qr con CODE=\"\" y EXPIRES=\"\" (pantalla de carga con instrucciones) "
+        "y luego solo actualizar esos dos valores con el resultado."
+    )
+    contents.append(
+        "📱 Mensaje para el usuario: escanea el QR desde WhatsApp → Ajustes → Dispositivos "
+        "vinculados → Vincular un dispositivo. Los códigos rotan cada ~30-60 s; la imagen "
+        f"del visor local se actualiza sola con cada rotación.{preview_note} "
+        "RECUERDA (asistente): si aún no creaste el artifact con el QR, hazlo AHORA, antes "
+        "de responder."
     )
     return contents
 
