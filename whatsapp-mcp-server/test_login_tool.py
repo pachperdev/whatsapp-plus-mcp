@@ -46,13 +46,16 @@ async def test_login_with_qr_serializa_imagen_inline(monkeypatch):
     # tokens (>1 min, el codigo expira); la plantilla genera el QR en el navegador a
     # partir del codigo crudo (~270 chars) en segundos.
     textos = " ".join(c.text for c in contents if isinstance(c, TextContent))
-    # QR EN LA CONVERSACION: texto de medio-bloque en un code block (se renderiza al
-    # instante, sin herramientas). Descartadas por pruebas reales: markdown data URI
-    # (Desktop lo bloquea), visualize/artifact (~1 min, el codigo expira), CDN (CSP).
+    # QR EN LA CONVERSACION via visualize con HTML minimo (imagen mini embebida). El QR
+    # de texto se descarto (interlineado del code block lo deforma). Sin markdown data URI
+    # suelto (Desktop lo bloquea como enlace externo) ni CDN (CSP).
     assert "cdnjs" not in textos, "nada de CDNs (CSP los bloquea)"
-    assert "data:image/png;base64," not in textos, "el data URI en markdown lo bloquea Desktop"
-    assert "```" in textos, "falta el bloque de codigo para el QR de texto"
-    assert any(ch in textos for ch in "▀▄█"), "falta el QR en caracteres de medio-bloque"
+    assert "visualiz" in textos.lower(), "falta la via visualize para el chat"
+    assert "data:image/png;base64," in textos, "falta el data URI mini dentro del HTML"
+    import re as _re
+    m = _re.search(r"data:image/png;base64,([A-Za-z0-9+/=]+)", textos)
+    assert m and len(m.group(1)) < 1200, f"data URI no es el mini scale=1: {len(m.group(1)) if m else 0}"
+    assert "![" not in textos, "no debe instruir markdown de imagen (Desktop lo bloquea)"
     assert "Vista Previa" in textos or "visor de" in textos, "falta la Vista Previa como canal primario"
 
 
@@ -74,14 +77,19 @@ def anyio_backend():
     return "asyncio"
 
 
-def test_qr_text_blocks_estructura_y_tamano():
-    """El QR de texto debe ser cuadrado-ish en medio-bloque y compacto para copiarlo rapido."""
-    from whatsapp_mcp.tools import _qr_text_blocks
+def test_qr_png_data_uri_mini():
+    """El PNG mini debe ser un PNG valido y compacto (scale=1, border=1)."""
+    import base64
+    import struct
+
+    from whatsapp_mcp.tools import _qr_png_data_uri
 
     code = "https://wa.me/settings/linked_devices#2@" + "A" * 230
-    txt = _qr_text_blocks(code)
-    lines = txt.splitlines()
-    # medio-bloque: ~la mitad de filas que columnas
-    assert all(set(ln) <= set(" \u2580\u2584\u2588") for ln in lines), "caracteres invalidos"
-    assert len(lines[0]) >= 2 * len(lines) - 4, "no parece medio-bloque (ratio alto/ancho)"
-    assert len(txt) < 3000, f"QR de texto demasiado grande para copiarlo rapido: {len(txt)}"
+    uri = _qr_png_data_uri(code)
+    assert uri.startswith("data:image/png;base64,")
+    b64 = uri.split(",", 1)[1]
+    assert len(b64) < 1000, f"data URI mini demasiado grande: {len(b64)}"
+    png = base64.b64decode(b64)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n", "magic PNG invalido"
+    w, h = struct.unpack(">II", png[16:24])
+    assert w == h and w >= 40, f"dimensiones sospechosas: {w}x{h}"
