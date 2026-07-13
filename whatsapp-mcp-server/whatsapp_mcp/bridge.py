@@ -1,6 +1,8 @@
 """Cliente HTTP del bridge: auth por token, sesion keep-alive y las acciones/escrituras."""
+import hashlib
 import json
 import os.path
+import platform
 import shutil
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -673,25 +675,127 @@ def _run_go_build(src_dir: str, out_path: str) -> Tuple[bool, str]:
     return True, ""
 
 
-def ensure_bridge_binary(bin_path: str) -> Tuple[bool, str]:
-    """Garantiza que exista el binario del bridge; si falta, lo auto-compila con Go.
+def _platform_asset_name() -> str:
+    """Nombre del asset de GitHub Releases para esta plataforma (convención GoReleaser)."""
+    system = platform.system().lower()  # darwin | linux | windows
+    machine = platform.machine().lower()
+    arch = {"x86_64": "amd64", "amd64": "amd64", "arm64": "arm64", "aarch64": "arm64"}.get(
+        machine, machine
+    )
+    suffix = ".exe" if system == "windows" else ""
+    return f"whatsapp-bridge-{system}-{arch}{suffix}"
 
-    Pieza clave del plug-and-play: el plugin no distribuye binarios, asi que la primera
-    vez se compila desde BRIDGE_SRC_DIR (el codigo Go incluido en el plugin/repo) hacia
-    bin_path (fuera del directorio del plugin, para sobrevivir updates). Sin toolchain
-    Go devuelve un error accionable.
+
+def _sha256_matches(data: bytes, asset_name: str, checksums_txt: str) -> bool:
+    """Verifica data contra la línea de asset_name en un checksums.txt (formato sha256sum)."""
+    digest = hashlib.sha256(data).hexdigest()
+    for line in checksums_txt.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1] == asset_name:
+            return parts[0] == digest
+    return False
+
+
+def _gh_token() -> str:
+    """Token para la API de GitHub (repo privado): env GITHUB_TOKEN/GH_TOKEN o `gh auth token`."""
+    import subprocess
+
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        return token
+    try:
+        proc = subprocess.run(
+            ["gh", "auth", "token"], capture_output=True, text=True, timeout=10
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return ""
+
+
+def _download_release_binary(bin_path: str) -> Tuple[bool, str]:
+    """Descarga el binario precompilado del último GitHub Release y verifica su SHA256.
+
+    Instalación atómica (tmp + os.replace) para que un fallo a mitad de descarga jamás
+    deje un binario corrupto en bin_path. Cualquier fallo devuelve (False, motivo) y el
+    caller cae al siguiente nivel de la cascada (go build local).
+    """
+    from whatsapp_mcp.config import RELEASE_REPO
+
+    asset_name = _platform_asset_name()
+    headers = {"Accept": "application/vnd.github+json"}
+    token = _gh_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        rel = requests.get(
+            f"https://api.github.com/repos/{RELEASE_REPO}/releases/latest",
+            headers=headers,
+            timeout=(5, 30),
+        )
+        if rel.status_code != 200:
+            return False, f"release: HTTP {rel.status_code}"
+        assets = {a["name"]: a for a in rel.json().get("assets", [])}
+        if asset_name not in assets or "checksums.txt" not in assets:
+            return False, f"release sin asset {asset_name} o checksums.txt"
+
+        # Los assets de repos privados solo se descargan via su API url con Accept octet-stream.
+        dl_headers = dict(headers)
+        dl_headers["Accept"] = "application/octet-stream"
+        checksums = requests.get(
+            assets["checksums.txt"]["url"], headers=dl_headers, timeout=(5, 30)
+        )
+        binary = requests.get(assets[asset_name]["url"], headers=dl_headers, timeout=(5, 120))
+        if checksums.status_code != 200 or binary.status_code != 200:
+            return False, f"descarga: HTTP {checksums.status_code}/{binary.status_code}"
+    except requests.RequestException as e:
+        return False, f"release: {e}"
+
+    if not _sha256_matches(binary.content, asset_name, checksums.text):
+        return False, f"checksum SHA256 no coincide para {asset_name} (descarga descartada)"
+
+    os.makedirs(os.path.dirname(bin_path) or ".", exist_ok=True)
+    tmp_path = bin_path + ".tmp"
+    with open(tmp_path, "wb") as f:
+        f.write(binary.content)
+    os.chmod(tmp_path, 0o755)
+    os.replace(tmp_path, bin_path)
+    return True, f"binario {asset_name} descargado y verificado (SHA256 OK)"
+
+
+def ensure_bridge_binary(bin_path: str) -> Tuple[bool, str]:
+    """Garantiza el binario del bridge resolviendo en cascada (plug-and-play).
+
+    1. Ya existe en bin_path -> usarlo.
+    2. Descargar el binario precompilado del último GitHub Release (verificado SHA256).
+    3. Fallback: compilar con Go desde BRIDGE_SRC_DIR (el código incluido en el plugin).
+    4. Error accionable con los motivos de ambos intentos.
+
+    bin_path vive fuera del directorio del plugin (~/.whatsapp-mcp/bin en modo plugin)
+    para sobrevivir updates.
     """
     from whatsapp_mcp.config import BRIDGE_SRC_DIR
 
     if os.path.isfile(bin_path):
         return True, ""
+
+    dl_ok, dl_msg = _download_release_binary(bin_path)
+    if dl_ok:
+        logger.info(dl_msg)
+        return True, dl_msg
+
     if not shutil.which("go"):
         return False, (
-            f"no existe el binario del bridge ({bin_path}) y no hay toolchain Go para "
-            "compilarlo. Instala Go (https://go.dev/dl/ o `brew install go`) y reintenta, "
-            "o compila manualmente y apunta WHATSAPP_BRIDGE_BIN al binario."
+            f"no existe el binario del bridge ({bin_path}); la descarga del release fallo "
+            f"({dl_msg}) y no hay toolchain Go para compilarlo. Instala Go "
+            "(https://go.dev/dl/ o `brew install go`) y reintenta, o compila manualmente "
+            "y apunta WHATSAPP_BRIDGE_BIN al binario."
         )
-    logger.info(f"compilando el bridge por primera vez ({BRIDGE_SRC_DIR} -> {bin_path})...")
+    logger.info(
+        f"release no disponible ({dl_msg}); compilando el bridge "
+        f"({BRIDGE_SRC_DIR} -> {bin_path})..."
+    )
     os.makedirs(os.path.dirname(bin_path) or ".", exist_ok=True)
     ok, err = _run_go_build(BRIDGE_SRC_DIR, bin_path)
     if not ok:

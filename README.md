@@ -38,7 +38,7 @@ Dos procesos cooperando en tu máquina:
 | Requisito | Para qué | Instalación |
 |-----------|----------|-------------|
 | [uv](https://docs.astral.sh/uv/) | Ejecutar el servidor MCP Python | `brew install uv` |
-| [Go](https://go.dev/dl/) ≥ 1.25 | Auto-compilar el bridge la primera vez | `brew install go` |
+| [Go](https://go.dev/dl/) ≥ 1.25 *(opcional)* | Solo como fallback: el bridge se descarga precompilado desde GitHub Releases (verificado SHA256); Go únicamente hace falta si no hay release para tu plataforma | `brew install go` |
 | [FFmpeg](https://ffmpeg.org/) *(opcional)* | Convertir audio a notas de voz (`send_audio_message`) | `brew install ffmpeg` |
 
 ## 🚀 Instalación
@@ -107,7 +107,7 @@ Simplemente pídeselo a tu agente:
 El agente llama a `login_with_qr` y el plugin hace el resto:
 
 1. Verifica si hay un bridge corriendo con **sesión válida** → la reutiliza (sin QR).
-2. Si no existe el binario del bridge, lo **compila automáticamente** (necesita Go).
+2. Si no existe el binario del bridge, **descarga el precompilado** del último release (verificación SHA256; usa tu token de `gh` para el repo privado) o, como fallback, lo compila con Go.
 3. Si hace falta login, te muestra el **QR en la conversación** y lo abre en tu visor de imágenes.
 4. Escaneas desde WhatsApp → **Ajustes → Dispositivos vinculados → Vincular un dispositivo**.
 
@@ -149,7 +149,8 @@ Este proyecto usa [whatsmeow](https://github.com/tulir/whatsmeow), un cliente **
 |----------|---------|-------------|
 | `WHATSAPP_PLUGIN_MODE` | — | `1` = datos en `~/.whatsapp-mcp/` (lo setea el plugin) |
 | `WHATSAPP_STORE_DIR` | `<repo>/whatsapp-bridge/store` | Directorio del store (sesión, mensajes, media) |
-| `WHATSAPP_BRIDGE_BIN` | `<repo>/whatsapp-bridge/whatsapp-bridge` | Binario del bridge (se auto-compila si falta) |
+| `WHATSAPP_BRIDGE_BIN` | `<repo>/whatsapp-bridge/whatsapp-bridge` | Binario del bridge (si falta: se descarga del release o se auto-compila) |
+| `WHATSAPP_RELEASE_REPO` | `mauricioDevApp/whatsapp-mcp-plugin` | Repo GitHub del que se descargan los binarios precompilados |
 | `WHATSAPP_BRIDGE_ADDR` | `127.0.0.1:8080` | Dirección del bridge (validada como loopback) |
 | `WHATSAPP_MEDIA_ALLOWED_DIRS` | — | Lista blanca de directorios para `send_file` |
 | `WHATSAPP_MESSAGES_DB` / `WHATSAPP_SESSION_DB` / `WHATSAPP_BRIDGE_TOKEN_FILE` / `WHATSAPP_BRIDGE_LOG` | derivados del store | Overrides finos |
@@ -172,7 +173,7 @@ La guía de arquitectura para agentes de código vive en [`CLAUDE.md`](CLAUDE.md
 
 ## 🩺 Solución de problemas
 
-- **"no existe el binario del bridge y no hay toolchain Go"** → instala Go (`brew install go`) y reintenta; el supervisor compila solo.
+- **"no existe el binario del bridge..."** → verifica `gh auth login` (la descarga del release lo usa) o instala Go (`brew install go`) como fallback; el supervisor resuelve solo.
 - **El QR expiró** → vuelve a pedir la conexión; `login_with_qr` siempre entrega el código vigente.
 - **"app state en recuperación"** al destacar/silenciar/archivar → tu teléfono debe estar en línea; reintenta en unos segundos (recuperación automática vía teléfono primario).
 - **Logs del bridge** → `~/.whatsapp-mcp/store/bridge.log` (modo plugin) o `<repo>/whatsapp-bridge/store/bridge.log`.

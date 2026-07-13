@@ -22,3 +22,6 @@ whatsapp-bridge/store/
 .claude/
 .atl/
 .ruff_cache/
+
+# Artefactos de GoReleaser (builds locales de snapshot)
+dist/

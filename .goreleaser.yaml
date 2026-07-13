@@ -1,0 +1,48 @@
+# Publicación de binarios precompilados del bridge (sin CGO: cross-compila trivial).
+# Se dispara desde .github/workflows/release.yml en cada tag v*; los assets siguen la
+# convención whatsapp-bridge-<os>-<arch>[.exe] que consume el supervisor Python
+# (whatsapp_mcp/bridge.py: _platform_asset_name + _download_release_binary).
+version: 2
+
+project_name: whatsapp-bridge
+
+builds:
+  - id: whatsapp-bridge
+    dir: whatsapp-bridge
+    main: .
+    binary: whatsapp-bridge
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+
+archives:
+  # Binario "pelado" como asset (sin tar/zip): el supervisor lo descarga y ejecuta directo.
+  - id: raw
+    formats: [binary]
+    name_template: "{{ .Binary }}-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  use: git
+  filters:
+    exclude:
+      - "^docs"
+      - "^test"
+
+release:
+  draft: false
+  prerelease: auto

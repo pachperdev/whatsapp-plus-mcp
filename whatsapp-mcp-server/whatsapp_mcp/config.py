@@ -60,3 +60,6 @@ STORE_DIR = os.environ.get("WHATSAPP_STORE_DIR", os.path.normpath(_STORE_DIR))
 BRIDGE_BIN_PATH = os.environ.get("WHATSAPP_BRIDGE_BIN", _DEFAULT_BRIDGE_BIN)
 # Log del bridge cuando lo lanza el supervisor (su stdout deja de ser una terminal).
 BRIDGE_LOG_PATH = os.environ.get("WHATSAPP_BRIDGE_LOG", os.path.join(STORE_DIR, "bridge.log"))
+# Repo GitHub del que se descargan los binarios precompilados del bridge (GitHub
+# Releases + checksums SHA256). La API sigue el redirect si el repo se transfiere.
+RELEASE_REPO = os.environ.get("WHATSAPP_RELEASE_REPO", "mauricioDevApp/whatsapp-mcp-plugin")
