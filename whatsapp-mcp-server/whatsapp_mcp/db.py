@@ -1,11 +1,31 @@
 """Repositorio SQLite: indice de contactos, resolucion de identidad y lecturas de la DB."""
 import sqlite3
 import time
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from whatsapp_mcp.config import MESSAGES_DB_PATH, WHATSAPP_DB_PATH, logger
 from whatsapp_mcp.models import Chat, Contact, Message, MessageContext
+
+
+@contextmanager
+def _ro_connect(db_path: str) -> Iterator[sqlite3.Connection]:
+    """Conexion SQLite de SOLO lectura con cierre garantizado (unico punto de apertura).
+
+    mode=ro via URI porque los lectores JAMAS deben crear la DB si no existe (el bridge
+    es el unico escritor y los tests blindan que un read no materializa el archivo) ni
+    tomar locks de escritura. timeout=10 da margen si el bridge esta escribiendo. El
+    finally cierra siempre, incluso si la consulta lanza a mitad de camino: es la cura
+    definitiva de las fugas de conexion que este modulo arrastraba con closes manuales.
+    Los errores NO se capturan aca: cada lector conserva su propia semantica de fallo
+    (tragar y devolver vacio, loguear, o propagar).
+    """
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def _normalize_phone(jid_or_local: str) -> str:
@@ -30,37 +50,34 @@ def _load_contact_index():
     names = {}
     lid_to_pn = {}
     saved = set()
+    # El except externo cubre el fallo al ABRIR la DB (ausente/corrupta): se degrada a
+    # indices vacios con log. Los except internos por tabla degradan en silencio ante
+    # esquemas viejos/parciales sin perder lo que la otra tabla si aporto.
     try:
-        conn = sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True, timeout=10)
+        with _ro_connect(WHATSAPP_DB_PATH) as conn:
+            cursor = conn.cursor()
+            try:
+                for their_jid, first_name, full_name, push_name, business_name in cursor.execute(
+                    "SELECT their_jid, first_name, full_name, push_name, business_name FROM whatsmeow_contacts"
+                ):
+                    pn = _normalize_phone(their_jid)
+                    # Preferimos como esta guardado en la libreta del usuario, luego push name
+                    name = (full_name or first_name or push_name or business_name or "").strip()
+                    if pn and name:
+                        names[pn] = name
+                    # Guardado = tiene nombre de agenda (lo asignaste tu via app-state),
+                    # a diferencia de quien solo tiene push_name/business_name.
+                    if pn and ((full_name or "").strip() or (first_name or "").strip()):
+                        saved.add(pn)
+            except sqlite3.Error:
+                pass
+            try:
+                for lid, pn in cursor.execute("SELECT lid, pn FROM whatsmeow_lid_map"):
+                    lid_to_pn[_normalize_phone(str(lid))] = _normalize_phone(str(pn))
+            except sqlite3.Error:
+                pass
     except sqlite3.Error as e:
         logger.error(f"Database error loading contacts: {e}")
-        return names, lid_to_pn, saved
-    # finally garantiza el cierre aunque una excepcion escape (antes conn.close()
-    # vivia dentro del try y se saltaba ante error -> fuga de conexion).
-    try:
-        cursor = conn.cursor()
-        try:
-            for their_jid, first_name, full_name, push_name, business_name in cursor.execute(
-                "SELECT their_jid, first_name, full_name, push_name, business_name FROM whatsmeow_contacts"
-            ):
-                pn = _normalize_phone(their_jid)
-                # Preferimos como esta guardado en la libreta del usuario, luego push name
-                name = (full_name or first_name or push_name or business_name or "").strip()
-                if pn and name:
-                    names[pn] = name
-                # Guardado = tiene nombre de agenda (lo asignaste tu via app-state),
-                # a diferencia de quien solo tiene push_name/business_name.
-                if pn and ((full_name or "").strip() or (first_name or "").strip()):
-                    saved.add(pn)
-        except sqlite3.Error:
-            pass
-        try:
-            for lid, pn in cursor.execute("SELECT lid, pn FROM whatsmeow_lid_map"):
-                lid_to_pn[_normalize_phone(str(lid))] = _normalize_phone(str(pn))
-        except sqlite3.Error:
-            pass
-    finally:
-        conn.close()
     return names, lid_to_pn, saved
 
 
@@ -176,25 +193,21 @@ def get_sender_name(sender_jid: str) -> str:
     if name:
         return name
     # 2) Fallback: nombre guardado en la tabla chats de messages.db
-    conn = None
     try:
-        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM chats WHERE jid = ? LIMIT 1", (sender_jid,))
-        result = cursor.fetchone()
-        if not result:
-            phone_part = sender_jid.split('@')[0] if '@' in sender_jid else sender_jid
-            cursor.execute("SELECT name FROM chats WHERE jid LIKE ? LIMIT 1", (f"%{phone_part}%",))
+        with _ro_connect(MESSAGES_DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM chats WHERE jid = ? LIMIT 1", (sender_jid,))
             result = cursor.fetchone()
-        if result and result[0]:
-            return result[0]
-        return sender_jid
+            if not result:
+                phone_part = sender_jid.split('@')[0] if '@' in sender_jid else sender_jid
+                cursor.execute("SELECT name FROM chats WHERE jid LIKE ? LIMIT 1", (f"%{phone_part}%",))
+                result = cursor.fetchone()
+            if result and result[0]:
+                return result[0]
+            return sender_jid
     except sqlite3.Error as e:
         logger.error(f"Database error while getting sender name: {e}")
         return sender_jid
-    finally:
-        if conn is not None:
-            conn.close()
 
 def format_message(message: Message, show_chat_info: bool = True) -> str:
     """Print a single message with consistent formatting."""
@@ -260,102 +273,98 @@ def list_messages(
     context_after: int = 1
 ) -> List[Dict[str, Any]]:
     """Get messages matching the specified criteria with optional context."""
-    conn = None
     try:
-        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
-        cursor = conn.cursor()
+        with _ro_connect(MESSAGES_DB_PATH) as conn:
+            cursor = conn.cursor()
 
-        # Build base query
-        query_parts = ["SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type FROM messages"]
-        query_parts.append("JOIN chats ON messages.chat_jid = chats.jid")
-        where_clauses = []
-        params = []
-        
-        # Add filters
-        if after:
-            try:
-                after_dt = datetime.fromisoformat(after)
-            except ValueError:
-                raise ValueError(f"Invalid date format for 'after': {after}. Please use ISO-8601 format.")
+            # Build base query
+            query_parts = ["SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type FROM messages"]
+            query_parts.append("JOIN chats ON messages.chat_jid = chats.jid")
+            where_clauses = []
+            params = []
 
-            where_clauses.append("messages.timestamp > ?")
-            params.append(after_dt)
+            # Add filters
+            if after:
+                try:
+                    after_dt = datetime.fromisoformat(after)
+                except ValueError:
+                    raise ValueError(f"Invalid date format for 'after': {after}. Please use ISO-8601 format.")
 
-        if before:
-            try:
-                before_dt = datetime.fromisoformat(before)
-            except ValueError:
-                raise ValueError(f"Invalid date format for 'before': {before}. Please use ISO-8601 format.")
+                where_clauses.append("messages.timestamp > ?")
+                params.append(after_dt)
 
-            where_clauses.append("messages.timestamp < ?")
-            params.append(before_dt)
+            if before:
+                try:
+                    before_dt = datetime.fromisoformat(before)
+                except ValueError:
+                    raise ValueError(f"Invalid date format for 'before': {before}. Please use ISO-8601 format.")
 
-        if sender_phone_number:
-            where_clauses.append("messages.sender = ?")
-            params.append(sender_phone_number)
-            
-        if chat_jid:
-            # Unir la conversacion completa: un contacto tiene mensajes bajo su @lid
-            # (entrantes en vivo) y bajo numero@s.whatsapp.net (salientes/history).
-            siblings = _sibling_chat_jids(chat_jid)
-            placeholders = ",".join(["?"] * len(siblings))
-            where_clauses.append(f"messages.chat_jid IN ({placeholders})")
-            params.extend(siblings)
-            
-        if query:
-            where_clauses.append("LOWER(messages.content) LIKE LOWER(?)")
-            params.append(f"%{query}%")
-            
-        if where_clauses:
-            query_parts.append("WHERE " + " AND ".join(where_clauses))
-            
-        # Add pagination
-        offset = page * limit
-        query_parts.append("ORDER BY messages.timestamp DESC")
-        query_parts.append("LIMIT ? OFFSET ?")
-        params.extend([limit, offset])
-        
-        cursor.execute(" ".join(query_parts), tuple(params))
-        messages = cursor.fetchall()
-        
-        result = []
-        for msg in messages:
-            message = Message(
-                timestamp=datetime.fromisoformat(msg[0]),
-                sender=msg[1],
-                chat_name=msg[2],
-                content=msg[3],
-                is_from_me=msg[4],
-                chat_jid=msg[5],
-                id=msg[6],
-                media_type=msg[7]
-            )
-            result.append(message)
-            
-        if include_context and result:
-            # Anexar contexto a cada match, deduplicando por (id, chat_jid) para no
-            # repetir mensajes ni romper el orden cronologico.
-            messages_with_context = []
-            seen = set()
-            for msg in result:
-                context = get_message_context(msg.id, context_before, context_after)
-                for m in [*context.before, context.message, *context.after]:
-                    key = (m.id, m.chat_jid)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    messages_with_context.append(m)
-            return [message_to_dict(m) for m in messages_with_context]
+                where_clauses.append("messages.timestamp < ?")
+                params.append(before_dt)
 
-        # Sin contexto
-        return [message_to_dict(m) for m in result]
-        
+            if sender_phone_number:
+                where_clauses.append("messages.sender = ?")
+                params.append(sender_phone_number)
+
+            if chat_jid:
+                # Unir la conversacion completa: un contacto tiene mensajes bajo su @lid
+                # (entrantes en vivo) y bajo numero@s.whatsapp.net (salientes/history).
+                siblings = _sibling_chat_jids(chat_jid)
+                placeholders = ",".join(["?"] * len(siblings))
+                where_clauses.append(f"messages.chat_jid IN ({placeholders})")
+                params.extend(siblings)
+
+            if query:
+                where_clauses.append("LOWER(messages.content) LIKE LOWER(?)")
+                params.append(f"%{query}%")
+
+            if where_clauses:
+                query_parts.append("WHERE " + " AND ".join(where_clauses))
+
+            # Add pagination
+            offset = page * limit
+            query_parts.append("ORDER BY messages.timestamp DESC")
+            query_parts.append("LIMIT ? OFFSET ?")
+            params.extend([limit, offset])
+
+            cursor.execute(" ".join(query_parts), tuple(params))
+            messages = cursor.fetchall()
+
+            result = []
+            for msg in messages:
+                message = Message(
+                    timestamp=datetime.fromisoformat(msg[0]),
+                    sender=msg[1],
+                    chat_name=msg[2],
+                    content=msg[3],
+                    is_from_me=msg[4],
+                    chat_jid=msg[5],
+                    id=msg[6],
+                    media_type=msg[7]
+                )
+                result.append(message)
+
+            if include_context and result:
+                # Anexar contexto a cada match, deduplicando por (id, chat_jid) para no
+                # repetir mensajes ni romper el orden cronologico.
+                messages_with_context = []
+                seen = set()
+                for msg in result:
+                    context = get_message_context(msg.id, context_before, context_after)
+                    for m in [*context.before, context.message, *context.after]:
+                        key = (m.id, m.chat_jid)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        messages_with_context.append(m)
+                return [message_to_dict(m) for m in messages_with_context]
+
+            # Sin contexto
+            return [message_to_dict(m) for m in result]
+
     except sqlite3.Error as e:
         logger.error(f"Database error: {e}")
         return []
-    finally:
-        if conn is not None:
-            conn.close()
 
 
 def get_message_context(
@@ -364,92 +373,88 @@ def get_message_context(
     after: int = 5
 ) -> MessageContext:
     """Get context around a specific message."""
-    conn = None
     try:
-        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
-        cursor = conn.cursor()
+        with _ro_connect(MESSAGES_DB_PATH) as conn:
+            cursor = conn.cursor()
 
-        # Get the target message first
-        cursor.execute("""
-            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type
-            FROM messages
-            JOIN chats ON messages.chat_jid = chats.jid
-            WHERE messages.id = ?
-        """, (message_id,))
-        msg_data = cursor.fetchone()
-        
-        if not msg_data:
-            raise ValueError(f"Message with ID {message_id} not found")
-            
-        target_message = Message(
-            timestamp=datetime.fromisoformat(msg_data[0]),
-            sender=msg_data[1],
-            chat_name=msg_data[2],
-            content=msg_data[3],
-            is_from_me=msg_data[4],
-            chat_jid=msg_data[5],
-            id=msg_data[6],
-            media_type=msg_data[8]
-        )
-        
-        # Get messages before
-        cursor.execute("""
-            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type
-            FROM messages
-            JOIN chats ON messages.chat_jid = chats.jid
-            WHERE messages.chat_jid = ? AND messages.timestamp < ?
-            ORDER BY messages.timestamp DESC
-            LIMIT ?
-        """, (msg_data[7], msg_data[0], before))
-        
-        before_messages = []
-        for msg in cursor.fetchall():
-            before_messages.append(Message(
-                timestamp=datetime.fromisoformat(msg[0]),
-                sender=msg[1],
-                chat_name=msg[2],
-                content=msg[3],
-                is_from_me=msg[4],
-                chat_jid=msg[5],
-                id=msg[6],
-                media_type=msg[7]
-            ))
-        
-        # Get messages after
-        cursor.execute("""
-            SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type
-            FROM messages
-            JOIN chats ON messages.chat_jid = chats.jid
-            WHERE messages.chat_jid = ? AND messages.timestamp > ?
-            ORDER BY messages.timestamp ASC
-            LIMIT ?
-        """, (msg_data[7], msg_data[0], after))
-        
-        after_messages = []
-        for msg in cursor.fetchall():
-            after_messages.append(Message(
-                timestamp=datetime.fromisoformat(msg[0]),
-                sender=msg[1],
-                chat_name=msg[2],
-                content=msg[3],
-                is_from_me=msg[4],
-                chat_jid=msg[5],
-                id=msg[6],
-                media_type=msg[7]
-            ))
-        
-        return MessageContext(
-            message=target_message,
-            before=before_messages,
-            after=after_messages
-        )
-        
+            # Get the target message first
+            cursor.execute("""
+                SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type
+                FROM messages
+                JOIN chats ON messages.chat_jid = chats.jid
+                WHERE messages.id = ?
+            """, (message_id,))
+            msg_data = cursor.fetchone()
+
+            if not msg_data:
+                raise ValueError(f"Message with ID {message_id} not found")
+
+            target_message = Message(
+                timestamp=datetime.fromisoformat(msg_data[0]),
+                sender=msg_data[1],
+                chat_name=msg_data[2],
+                content=msg_data[3],
+                is_from_me=msg_data[4],
+                chat_jid=msg_data[5],
+                id=msg_data[6],
+                media_type=msg_data[8]
+            )
+
+            # Get messages before
+            cursor.execute("""
+                SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type
+                FROM messages
+                JOIN chats ON messages.chat_jid = chats.jid
+                WHERE messages.chat_jid = ? AND messages.timestamp < ?
+                ORDER BY messages.timestamp DESC
+                LIMIT ?
+            """, (msg_data[7], msg_data[0], before))
+
+            before_messages = []
+            for msg in cursor.fetchall():
+                before_messages.append(Message(
+                    timestamp=datetime.fromisoformat(msg[0]),
+                    sender=msg[1],
+                    chat_name=msg[2],
+                    content=msg[3],
+                    is_from_me=msg[4],
+                    chat_jid=msg[5],
+                    id=msg[6],
+                    media_type=msg[7]
+                ))
+
+            # Get messages after
+            cursor.execute("""
+                SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type
+                FROM messages
+                JOIN chats ON messages.chat_jid = chats.jid
+                WHERE messages.chat_jid = ? AND messages.timestamp > ?
+                ORDER BY messages.timestamp ASC
+                LIMIT ?
+            """, (msg_data[7], msg_data[0], after))
+
+            after_messages = []
+            for msg in cursor.fetchall():
+                after_messages.append(Message(
+                    timestamp=datetime.fromisoformat(msg[0]),
+                    sender=msg[1],
+                    chat_name=msg[2],
+                    content=msg[3],
+                    is_from_me=msg[4],
+                    chat_jid=msg[5],
+                    id=msg[6],
+                    media_type=msg[7]
+                ))
+
+            return MessageContext(
+                message=target_message,
+                before=before_messages,
+                after=after_messages
+            )
+
     except sqlite3.Error as e:
         logger.error(f"Database error: {e}")
         raise
-    finally:
-        if conn is not None:
-            conn.close()
 
 
 def list_chats(
@@ -460,81 +465,77 @@ def list_chats(
     sort_by: str = "last_active"
 ) -> List[Chat]:
     """Get chats matching the specified criteria."""
-    conn = None
     try:
-        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
-        cursor = conn.cursor()
-        
-        # Build base query
-        query_parts = ["""
-            SELECT 
-                chats.jid,
-                chats.name,
-                chats.last_message_time,
-                messages.content as last_message,
-                messages.sender as last_sender,
-                messages.is_from_me as last_is_from_me
-            FROM chats
-        """]
-        
-        if include_last_message:
-            query_parts.append("""
-                LEFT JOIN messages ON chats.jid = messages.chat_jid 
-                AND chats.last_message_time = messages.timestamp
-            """)
-            
-        where_clauses = []
-        params = []
+        with _ro_connect(MESSAGES_DB_PATH) as conn:
+            cursor = conn.cursor()
 
-        # El filtro por `query` se aplica en Python (mas abajo) sobre el nombre
-        # RESUELTO, no en SQL: chats.name guarda el lid crudo, asi que un LIKE en
-        # SQL no encontraria por nombre real (ej. buscar "Esposa").
+            # Build base query
+            query_parts = ["""
+                SELECT
+                    chats.jid,
+                    chats.name,
+                    chats.last_message_time,
+                    messages.content as last_message,
+                    messages.sender as last_sender,
+                    messages.is_from_me as last_is_from_me
+                FROM chats
+            """]
 
-        if where_clauses:
-            query_parts.append("WHERE " + " AND ".join(where_clauses))
-            
-        # Add sorting
-        order_by = "chats.last_message_time DESC" if sort_by == "last_active" else "chats.name"
-        query_parts.append(f"ORDER BY {order_by}")
-        
-        # NO paginamos en SQL: traemos todo ordenado y luego unificamos los chats
-        # que son la misma persona bajo distintos JIDs (lid vs numero). Recien ahi
-        # aplicamos limit/offset, para que el conteo sea correcto tras deduplicar.
-        cursor.execute(" ".join(query_parts), tuple(params))
-        chats = cursor.fetchall()
+            if include_last_message:
+                query_parts.append("""
+                    LEFT JOIN messages ON chats.jid = messages.chat_jid
+                    AND chats.last_message_time = messages.timestamp
+                """)
 
-        seen_keys = set()
-        deduped = []
-        for chat_data in chats:
-            key = _canonical_chat_key(chat_data[0])
-            if key in seen_keys:
-                continue  # ya tenemos la fila mas reciente de esta persona
-            seen_keys.add(key)
-            resolved = resolve_contact_name(chat_data[0])
-            deduped.append(Chat(
-                jid=chat_data[0],
-                name=resolved or chat_data[1],
-                last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
-                last_message=chat_data[3],
-                last_sender=chat_data[4],
-                last_is_from_me=chat_data[5]
-            ))
+            where_clauses = []
+            params = []
 
-        # Filtro por `query` sobre el nombre RESUELTO o el jid (no el lid crudo)
-        if query:
-            q = query.lower().strip()
-            deduped = [c for c in deduped if (c.name and q in c.name.lower()) or q in c.jid.lower()]
+            # El filtro por `query` se aplica en Python (mas abajo) sobre el nombre
+            # RESUELTO, no en SQL: chats.name guarda el lid crudo, asi que un LIKE en
+            # SQL no encontraria por nombre real (ej. buscar "Esposa").
 
-        # Paginacion en memoria sobre la lista ya unificada
-        offset = page * limit
-        return deduped[offset:offset + limit]
-        
+            if where_clauses:
+                query_parts.append("WHERE " + " AND ".join(where_clauses))
+
+            # Add sorting
+            order_by = "chats.last_message_time DESC" if sort_by == "last_active" else "chats.name"
+            query_parts.append(f"ORDER BY {order_by}")
+
+            # NO paginamos en SQL: traemos todo ordenado y luego unificamos los chats
+            # que son la misma persona bajo distintos JIDs (lid vs numero). Recien ahi
+            # aplicamos limit/offset, para que el conteo sea correcto tras deduplicar.
+            cursor.execute(" ".join(query_parts), tuple(params))
+            chats = cursor.fetchall()
+
+            seen_keys = set()
+            deduped = []
+            for chat_data in chats:
+                key = _canonical_chat_key(chat_data[0])
+                if key in seen_keys:
+                    continue  # ya tenemos la fila mas reciente de esta persona
+                seen_keys.add(key)
+                resolved = resolve_contact_name(chat_data[0])
+                deduped.append(Chat(
+                    jid=chat_data[0],
+                    name=resolved or chat_data[1],
+                    last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
+                    last_message=chat_data[3],
+                    last_sender=chat_data[4],
+                    last_is_from_me=chat_data[5]
+                ))
+
+            # Filtro por `query` sobre el nombre RESUELTO o el jid (no el lid crudo)
+            if query:
+                q = query.lower().strip()
+                deduped = [c for c in deduped if (c.name and q in c.name.lower()) or q in c.jid.lower()]
+
+            # Paginacion en memoria sobre la lista ya unificada
+            offset = page * limit
+            return deduped[offset:offset + limit]
+
     except sqlite3.Error as e:
         logger.error(f"Database error: {e}")
         return []
-    finally:
-        if conn is not None:
-            conn.close()
 
 
 def search_contacts(query: str) -> List[Contact]:
@@ -552,11 +553,10 @@ def search_contacts(query: str) -> List[Contact]:
         return lid_to_pn.get(pn, pn)  # si es un lid, mapearlo a su numero real
 
     # 1) Libreta real de WhatsApp (la fuente con todos los contactos guardados).
-    # finally garantiza el cierre: antes conn.close() vivia dentro del try y se
-    # saltaba ante un sqlite3.Error -> fuga de conexion.
+    # Cada fuente traga su sqlite3.Error por separado: si la libreta falla, la
+    # busqueda degrada a los resultados parciales de chats (y viceversa).
     try:
-        conn = sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True, timeout=10)
-        try:
+        with _ro_connect(WHATSAPP_DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -578,15 +578,12 @@ def search_contacts(query: str) -> List[Contact]:
                         name=name or None,
                         jid=f"{pn}@s.whatsapp.net",
                     )
-        finally:
-            conn.close()
     except sqlite3.Error as e:
         logger.error(f"Database error searching contacts: {e}")
 
     # 2) Complementar con chats (cubre nombres que solo existen ahi)
     try:
-        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
-        try:
+        with _ro_connect(MESSAGES_DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -601,8 +598,6 @@ def search_contacts(query: str) -> List[Contact]:
                 if pn not in results:
                     resolved = names_idx.get(pn) or resolve_contact_name(jid) or name
                     results[pn] = Contact(phone_number=pn, name=resolved, jid=jid)
-        finally:
-            conn.close()
     except sqlite3.Error as e:
         logger.error(f"Database error searching chats: {e}")
 
@@ -617,150 +612,138 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
         limit: Maximum number of chats to return (default 20)
         page: Page number for pagination (default 0)
     """
-    conn = None
     try:
-        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
-        cursor = conn.cursor()
+        with _ro_connect(MESSAGES_DB_PATH) as conn:
+            cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT DISTINCT
-                c.jid,
-                c.name,
-                c.last_message_time,
-                m.content as last_message,
-                m.sender as last_sender,
-                m.is_from_me as last_is_from_me
-            FROM chats c
-            JOIN messages m ON c.jid = m.chat_jid
-            WHERE m.sender = ? OR c.jid = ?
-            ORDER BY c.last_message_time DESC
-            LIMIT ? OFFSET ?
-        """, (jid, jid, limit, page * limit))
-        
-        chats = cursor.fetchall()
-        
-        result = []
-        for chat_data in chats:
-            resolved = resolve_contact_name(chat_data[0])
-            chat = Chat(
+            cursor.execute("""
+                SELECT DISTINCT
+                    c.jid,
+                    c.name,
+                    c.last_message_time,
+                    m.content as last_message,
+                    m.sender as last_sender,
+                    m.is_from_me as last_is_from_me
+                FROM chats c
+                JOIN messages m ON c.jid = m.chat_jid
+                WHERE m.sender = ? OR c.jid = ?
+                ORDER BY c.last_message_time DESC
+                LIMIT ? OFFSET ?
+            """, (jid, jid, limit, page * limit))
+
+            chats = cursor.fetchall()
+
+            result = []
+            for chat_data in chats:
+                resolved = resolve_contact_name(chat_data[0])
+                chat = Chat(
+                    jid=chat_data[0],
+                    name=resolved or chat_data[1],
+                    last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
+                    last_message=chat_data[3],
+                    last_sender=chat_data[4],
+                    last_is_from_me=chat_data[5]
+                )
+                result.append(chat)
+
+            return result
+
+    except sqlite3.Error as e:
+        logger.error(f"Database error: {e}")
+        return []
+
+
+def get_last_interaction(jid: str) -> Optional[str]:
+    """Get most recent message involving the contact."""
+    try:
+        with _ro_connect(MESSAGES_DB_PATH) as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT
+                    m.timestamp,
+                    m.sender,
+                    c.name,
+                    m.content,
+                    m.is_from_me,
+                    c.jid,
+                    m.id,
+                    m.media_type
+                FROM messages m
+                JOIN chats c ON m.chat_jid = c.jid
+                WHERE m.sender = ? OR c.jid = ?
+                ORDER BY m.timestamp DESC
+                LIMIT 1
+            """, (jid, jid))
+
+            msg_data = cursor.fetchone()
+
+            if not msg_data:
+                return None
+
+            message = Message(
+                timestamp=datetime.fromisoformat(msg_data[0]),
+                sender=msg_data[1],
+                chat_name=msg_data[2],
+                content=msg_data[3],
+                is_from_me=msg_data[4],
+                chat_jid=msg_data[5],
+                id=msg_data[6],
+                media_type=msg_data[7]
+            )
+
+            return format_message(message)
+
+    except sqlite3.Error as e:
+        logger.error(f"Database error: {e}")
+        return None
+
+
+def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]:
+    """Get chat metadata by JID."""
+    try:
+        with _ro_connect(MESSAGES_DB_PATH) as conn:
+            cursor = conn.cursor()
+
+            query = """
+                SELECT
+                    c.jid,
+                    c.name,
+                    c.last_message_time,
+                    m.content as last_message,
+                    m.sender as last_sender,
+                    m.is_from_me as last_is_from_me
+                FROM chats c
+            """
+
+            if include_last_message:
+                query += """
+                    LEFT JOIN messages m ON c.jid = m.chat_jid
+                    AND c.last_message_time = m.timestamp
+                """
+
+            query += " WHERE c.jid = ?"
+
+            cursor.execute(query, (chat_jid,))
+            chat_data = cursor.fetchone()
+
+            if not chat_data:
+                return None
+
+            return Chat(
                 jid=chat_data[0],
-                name=resolved or chat_data[1],
+                # Resolver el nombre del contacto (lid->numero->libreta) como las otras tools;
+                # fallback al nombre guardado (grupos / desconocidos).
+                name=resolve_contact_name(chat_data[0]) or chat_data[1],
                 last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
                 last_message=chat_data[3],
                 last_sender=chat_data[4],
                 last_is_from_me=chat_data[5]
             )
-            result.append(chat)
-            
-        return result
-        
-    except sqlite3.Error as e:
-        logger.error(f"Database error: {e}")
-        return []
-    finally:
-        if conn is not None:
-            conn.close()
 
-
-def get_last_interaction(jid: str) -> Optional[str]:
-    """Get most recent message involving the contact."""
-    conn = None
-    try:
-        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT 
-                m.timestamp,
-                m.sender,
-                c.name,
-                m.content,
-                m.is_from_me,
-                c.jid,
-                m.id,
-                m.media_type
-            FROM messages m
-            JOIN chats c ON m.chat_jid = c.jid
-            WHERE m.sender = ? OR c.jid = ?
-            ORDER BY m.timestamp DESC
-            LIMIT 1
-        """, (jid, jid))
-        
-        msg_data = cursor.fetchone()
-        
-        if not msg_data:
-            return None
-            
-        message = Message(
-            timestamp=datetime.fromisoformat(msg_data[0]),
-            sender=msg_data[1],
-            chat_name=msg_data[2],
-            content=msg_data[3],
-            is_from_me=msg_data[4],
-            chat_jid=msg_data[5],
-            id=msg_data[6],
-            media_type=msg_data[7]
-        )
-        
-        return format_message(message)
-        
     except sqlite3.Error as e:
         logger.error(f"Database error: {e}")
         return None
-    finally:
-        if conn is not None:
-            conn.close()
-
-
-def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]:
-    """Get chat metadata by JID."""
-    conn = None
-    try:
-        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
-        cursor = conn.cursor()
-        
-        query = """
-            SELECT 
-                c.jid,
-                c.name,
-                c.last_message_time,
-                m.content as last_message,
-                m.sender as last_sender,
-                m.is_from_me as last_is_from_me
-            FROM chats c
-        """
-        
-        if include_last_message:
-            query += """
-                LEFT JOIN messages m ON c.jid = m.chat_jid 
-                AND c.last_message_time = m.timestamp
-            """
-            
-        query += " WHERE c.jid = ?"
-        
-        cursor.execute(query, (chat_jid,))
-        chat_data = cursor.fetchone()
-        
-        if not chat_data:
-            return None
-            
-        return Chat(
-            jid=chat_data[0],
-            # Resolver el nombre del contacto (lid->numero->libreta) como las otras tools;
-            # fallback al nombre guardado (grupos / desconocidos).
-            name=resolve_contact_name(chat_data[0]) or chat_data[1],
-            last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
-            last_message=chat_data[3],
-            last_sender=chat_data[4],
-            last_is_from_me=chat_data[5]
-        )
-        
-    except sqlite3.Error as e:
-        logger.error(f"Database error: {e}")
-        return None
-    finally:
-        if conn is not None:
-            conn.close()
 
 
 def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
@@ -775,47 +758,43 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
     for lid, mapped_pn in lid_to_pn.items():
         if mapped_pn == pn:
             candidate_jids.append(f"{lid}@lid")
-    conn = None
     try:
-        conn = sqlite3.connect(f"file:{MESSAGES_DB_PATH}?mode=ro", uri=True, timeout=10)
-        cursor = conn.cursor()
-        placeholders = ",".join(["?"] * len(candidate_jids))
-        cursor.execute(f"""
-            SELECT
-                c.jid,
-                c.name,
-                c.last_message_time,
-                m.content as last_message,
-                m.sender as last_sender,
-                m.is_from_me as last_is_from_me
-            FROM chats c
-            LEFT JOIN messages m ON c.jid = m.chat_jid
-                AND c.last_message_time = m.timestamp
-            WHERE c.jid IN ({placeholders})
-            ORDER BY c.last_message_time DESC
-            LIMIT 1
-        """, tuple(candidate_jids))
+        with _ro_connect(MESSAGES_DB_PATH) as conn:
+            cursor = conn.cursor()
+            placeholders = ",".join(["?"] * len(candidate_jids))
+            cursor.execute(f"""
+                SELECT
+                    c.jid,
+                    c.name,
+                    c.last_message_time,
+                    m.content as last_message,
+                    m.sender as last_sender,
+                    m.is_from_me as last_is_from_me
+                FROM chats c
+                LEFT JOIN messages m ON c.jid = m.chat_jid
+                    AND c.last_message_time = m.timestamp
+                WHERE c.jid IN ({placeholders})
+                ORDER BY c.last_message_time DESC
+                LIMIT 1
+            """, tuple(candidate_jids))
 
-        chat_data = cursor.fetchone()
+            chat_data = cursor.fetchone()
 
-        if not chat_data:
-            return None
+            if not chat_data:
+                return None
 
-        return Chat(
-            jid=chat_data[0],
-            name=resolve_contact_name(chat_data[0]) or chat_data[1],
-            last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
-            last_message=chat_data[3],
-            last_sender=chat_data[4],
-            last_is_from_me=chat_data[5]
-        )
-        
+            return Chat(
+                jid=chat_data[0],
+                name=resolve_contact_name(chat_data[0]) or chat_data[1],
+                last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
+                last_message=chat_data[3],
+                last_sender=chat_data[4],
+                last_is_from_me=chat_data[5]
+            )
+
     except sqlite3.Error as e:
         logger.error(f"Database error: {e}")
         return None
-    finally:
-        if conn is not None:
-            conn.close()
 
 
 def list_all_contacts(limit: int = 0, saved_only: bool = False) -> List[Contact]:
