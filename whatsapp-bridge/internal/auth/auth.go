@@ -31,14 +31,23 @@ func GetOrCreateBridgeToken(storeDir string) (string, error) {
 		return "", fmt.Errorf("failed to generate token: %v", err)
 	}
 	tok := hex.EncodeToString(buf)
+	// os.WriteFile solo aplica el modo al CREAR el archivo: si regeneramos sobre un
+	// .bridge_token preexistente (vacío/whitespace) con permisos laxos (p. ej. 0644),
+	// el token vivo quedaría legible por otros usuarios. Eliminarlo primero garantiza
+	// que 0600 se aplique en la creación, sin depender de que chmod funcione en el
+	// filesystem (FUSE/overlay pueden rechazarlo y dejarían la API bloqueada en 401).
+	_ = os.Remove(path)
 	if err := os.WriteFile(path, []byte(tok), 0600); err != nil {
 		return "", fmt.Errorf("failed to persist token: %v", err)
 	}
-	// os.WriteFile solo aplica el modo al CREAR el archivo: si regeneramos sobre un
-	// .bridge_token preexistente (vacío/whitespace) con permisos laxos (p. ej. 0644),
-	// el token vivo quedaría legible por otros usuarios. Forzamos 0600 siempre.
-	if err := os.Chmod(path, 0600); err != nil {
-		return "", fmt.Errorf("failed to secure token file: %v", err)
+	// Fail-closed solo ante un riesgo REAL: si el archivo aun quedo laxo (Remove
+	// fallo y WriteFile reuso el preexistente), intentar chmod y verificar el modo
+	// efectivo; con el token vivo legible por otros usuarios es mejor no arrancar.
+	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm() != 0600 {
+		_ = os.Chmod(path, 0600)
+		if fi, err = os.Stat(path); err == nil && fi.Mode().Perm() != 0600 {
+			return "", fmt.Errorf("token file %s has insecure mode %o and could not be restricted to 0600", path, fi.Mode().Perm())
+		}
 	}
 	return tok, nil
 }
