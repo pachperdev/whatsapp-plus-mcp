@@ -3,8 +3,144 @@ package auth
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 )
+
+// tokenRe: el token es hex de 64 caracteres (32 bytes aleatorios codificados).
+var tokenRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// tokenMode devuelve los permisos actuales del archivo de token.
+func tokenMode(t *testing.T, dir string) os.FileMode {
+	t.Helper()
+	fi, err := os.Stat(filepath.Join(dir, ".bridge_token"))
+	if err != nil {
+		t.Fatalf("stat token: %v", err)
+	}
+	return fi.Mode().Perm()
+}
+
+// TestGetOrCreateBridgeToken cubre el ciclo de vida del token compartido bridge<->MCP:
+// es la credencial que protege la API local, así que el formato (64 hex) y el modo
+// 0600 del archivo son parte del contrato de seguridad.
+func TestGetOrCreateBridgeToken(t *testing.T) {
+	t.Run("crea un token 64-hex con modo 0600", func(t *testing.T) {
+		dir := t.TempDir()
+		tok, err := GetOrCreateBridgeToken(dir)
+		if err != nil {
+			t.Fatalf("GetOrCreateBridgeToken: %v", err)
+		}
+		if !tokenRe.MatchString(tok) {
+			t.Errorf("formato: got %q, want 64 caracteres hex", tok)
+		}
+		if mode := tokenMode(t, dir); mode != 0o600 {
+			t.Errorf("modo del archivo: got %o, want %o", mode, 0o600)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, ".bridge_token"))
+		if err != nil {
+			t.Fatalf("leer token: %v", err)
+		}
+		if string(data) != tok {
+			t.Errorf("el archivo debe contener el mismo token: got %q, want %q", data, tok)
+		}
+	})
+
+	t.Run("reusa el token existente", func(t *testing.T) {
+		// El server Python lee el mismo archivo: si cada arranque regenerara el
+		// token, cualquier reinicio del bridge rompería la auth del MCP.
+		dir := t.TempDir()
+		first, err := GetOrCreateBridgeToken(dir)
+		if err != nil {
+			t.Fatalf("primera llamada: %v", err)
+		}
+		second, err := GetOrCreateBridgeToken(dir)
+		if err != nil {
+			t.Fatalf("segunda llamada: %v", err)
+		}
+		if second != first {
+			t.Errorf("got %q, want %q (mismo token)", second, first)
+		}
+	})
+
+	t.Run("re-aplica 0600 si el archivo quedó laxo", func(t *testing.T) {
+		// Regresión del "best-effort chmod": un fallo previo pudo dejar el token
+		// legible por otros usuarios; al reusarlo se debe volver a 0600.
+		dir := t.TempDir()
+		first, err := GetOrCreateBridgeToken(dir)
+		if err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		path := filepath.Join(dir, ".bridge_token")
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatalf("chmod setup: %v", err)
+		}
+		tok, err := GetOrCreateBridgeToken(dir)
+		if err != nil {
+			t.Fatalf("GetOrCreateBridgeToken: %v", err)
+		}
+		if tok != first {
+			t.Errorf("debería reusar el token: got %q, want %q", tok, first)
+		}
+		if mode := tokenMode(t, dir); mode != 0o600 {
+			t.Errorf("modo tras reuso: got %o, want %o", mode, 0o600)
+		}
+	})
+
+	t.Run("archivo vacío regenera", func(t *testing.T) {
+		// Un archivo vacío (p. ej. de un crash a mitad de escritura) no es un token
+		// válido: la auth fail-closed rechazaría todo. Debe regenerarse. El fixture
+		// se crea a propósito con 0644: os.WriteFile NO re-aplica permisos sobre un
+		// archivo existente, así que la regeneración debe forzar 0600 explícitamente
+		// o el token vivo quedaría legible por otros usuarios.
+		dir := t.TempDir()
+		path := filepath.Join(dir, ".bridge_token")
+		if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		tok, err := GetOrCreateBridgeToken(dir)
+		if err != nil {
+			t.Fatalf("GetOrCreateBridgeToken: %v", err)
+		}
+		if !tokenRe.MatchString(tok) {
+			t.Errorf("token regenerado inválido: got %q", tok)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("leer token: %v", err)
+		}
+		if string(data) != tok {
+			t.Errorf("el token regenerado debe persistirse: got %q, want %q", data, tok)
+		}
+		if mode := tokenMode(t, dir); mode != 0o600 {
+			t.Errorf("modo tras regenerar sobre archivo laxo: got %o, want %o", mode, 0o600)
+		}
+	})
+
+	t.Run("solo whitespace regenera", func(t *testing.T) {
+		// El TrimSpace del reuso trata "solo espacios" como vacío: regenerar.
+		dir := t.TempDir()
+		path := filepath.Join(dir, ".bridge_token")
+		if err := os.WriteFile(path, []byte("  \n\t\n"), 0o600); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		tok, err := GetOrCreateBridgeToken(dir)
+		if err != nil {
+			t.Fatalf("GetOrCreateBridgeToken: %v", err)
+		}
+		if !tokenRe.MatchString(tok) {
+			t.Errorf("token regenerado inválido: got %q", tok)
+		}
+	})
+
+	t.Run("directorio inexistente falla", func(t *testing.T) {
+		// Sin storeDir no hay dónde persistir: mejor error explícito que un token
+		// efímero que el server Python nunca podría leer.
+		dir := filepath.Join(t.TempDir(), "no-existe")
+		if _, err := GetOrCreateBridgeToken(dir); err == nil {
+			t.Error("esperaba error al no poder persistir el token")
+		}
+	})
+}
 
 func TestValidateMediaPath(t *testing.T) {
 	dir := t.TempDir()

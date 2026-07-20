@@ -90,10 +90,15 @@ def send_message(recipient: str, message: str, reply_to: str = "", mentions: Opt
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
             
+    # Desde requests>=2.27, response.json() lanza requests.exceptions.JSONDecodeError,
+    # que hereda de RequestException Y de json.JSONDecodeError (herencia doble). Debe
+    # capturarse ANTES que RequestException: si no, un 200 con body no-JSON caia en
+    # 'Request error' y esta rama de parsing quedaba muerta (bug historico). La tupla
+    # conserva json.JSONDecodeError puro para cuando la excepcion no viene de requests.
+    except (requests.exceptions.JSONDecodeError, json.JSONDecodeError):
+        return False, f"Error parsing response: {response.text if response is not None else ''}"
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
-    except json.JSONDecodeError:
-        return False, f"Error parsing response: {response.text if response is not None else ''}"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
@@ -125,10 +130,12 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
             
+    # JSONDecodeError de requests ANTES que RequestException: herencia doble desde
+    # requests 2.27 (ver el comentario en send_message).
+    except (requests.exceptions.JSONDecodeError, json.JSONDecodeError):
+        return False, f"Error parsing response: {response.text if response is not None else ''}"
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
-    except json.JSONDecodeError:
-        return False, f"Error parsing response: {response.text if response is not None else ''}"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
@@ -168,10 +175,12 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
             
+    # JSONDecodeError de requests ANTES que RequestException: herencia doble desde
+    # requests 2.27 (ver el comentario en send_message).
+    except (requests.exceptions.JSONDecodeError, json.JSONDecodeError):
+        return False, f"Error parsing response: {response.text if response is not None else ''}"
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
-    except json.JSONDecodeError:
-        return False, f"Error parsing response: {response.text if response is not None else ''}"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
     finally:
@@ -215,11 +224,13 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             logger.error(f"Error: HTTP {response.status_code} - {response.text}")
             return None
             
+    # JSONDecodeError de requests ANTES que RequestException: herencia doble desde
+    # requests 2.27 (ver el comentario en send_message).
+    except (requests.exceptions.JSONDecodeError, json.JSONDecodeError):
+        logger.error(f"Error parsing response: {response.text if response is not None else ''}")
+        return None
     except requests.RequestException as e:
         logger.error(f"Request error: {str(e)}")
-        return None
-    except json.JSONDecodeError:
-        logger.error(f"Error parsing response: {response.text if response is not None else ''}")
         return None
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
@@ -496,10 +507,12 @@ def get_status() -> Dict[str, Any]:
         if response.status_code == 200:
             return response.json()
         return {"success": False, "message": f"HTTP {response.status_code} - {response.text}"}
+    # JSONDecodeError de requests ANTES que RequestException: herencia doble desde
+    # requests 2.27 (ver el comentario en send_message).
+    except (requests.exceptions.JSONDecodeError, json.JSONDecodeError):
+        return {"success": False, "message": "Error parsing response"}
     except requests.RequestException as e:
         return {"success": False, "message": f"Request error: {str(e)}"}
-    except json.JSONDecodeError:
-        return {"success": False, "message": "Error parsing response"}
 
 
 # --- Lote A1: perfil & cuenta ---

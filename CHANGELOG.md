@@ -13,6 +13,12 @@ Forked from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).
 
 ### Security
 
+- **Token regeneration no longer trusts `chmod`** (`GetOrCreateBridgeToken`):
+  regenerating over a pre-existing lax-permission `.bridge_token` (e.g. `0644`
+  left by a crash) used to keep the live token world-readable — `os.WriteFile`
+  only applies the mode on file *creation*. The file is now removed and recreated
+  (so `0600` applies at creation), failing closed only if a `Stat` check confirms
+  the effective mode is still insecure. Found by the new test campaign.
 - **Media exfiltration guard hardened** (`ValidateMediaPath`): the `store/`
   protection now compares **by inode** (`os.SameFile`) instead of a case-sensitive
   string prefix. Closes a bypass on case-insensitive filesystems (APFS/NTFS) where
@@ -31,8 +37,22 @@ Forked from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).
 - **OGG parser bounds fix**: `AnalyzeOggOpus` no longer panics on a truncated
   `OpusHead` (off-by-4 in the `SampleRate` read).
 
+### Fixed
+
+- **Dead `"Error parsing response"` branch restored** (`bridge.py`): since
+  requests ≥ 2.27, `response.json()` raises `requests.exceptions.JSONDecodeError`,
+  which inherits from `RequestException` — the earlier `except` swallowed invalid
+  JSON as `"Request error"`. The five affected functions (`send_message`,
+  `send_file`, `send_audio_message`, `download_media`, `get_status`) now catch
+  `JSONDecodeError` first, honoring the documented error contract.
+
 ### Changed
 
+- **Dependencies**: whatsmeow bumped to 2026-07-20 (protocol protobuf updates,
+  new `IsOnWhatsApp` query format backing `check_whatsapp`, DMs always sent via
+  LID — already covered by the `@lid`↔PN unification in `db.py`);
+  `modernc.org/sqlite` 1.53 → 1.54 (SQLite 3.53.3). `mcp` stays pinned `<2` on
+  purpose (v2 is still pre-release).
 - **Bridge configuration by environment** (`internal/config`): `WHATSAPP_BRIDGE_ADDR`
   / `WHATSAPP_STORE_DIR` / `WHATSAPP_MEDIA_ALLOWED_DIRS`, all paths resolved to
   absolute at startup (no more accidental CWD-relative `store/`).
@@ -44,6 +64,22 @@ Forked from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).
 
 ### Internal / quality
 
+- **Test campaign (+122 cases)**: bridge coverage 20.4% → 29.7% (media/edit
+  protobuf parsing, store revoke/edit invariants, bridge token, group invites,
+  quoted context, event dispatcher, `sendAppState` LTHash recovery 0 → 100%);
+  Python coverage 37% → 56% (`@lid`↔number resolution, contact index + TTL cache,
+  message listing with sibling JIDs, supervisor state machine, HTTP error
+  contract, release binary download). Full 4R review (risk / reliability /
+  resilience / readability) run over the whole diff.
+- **`api/server.go` split by domain** (1535 → 202 lines): the 51 handlers now
+  register per domain in `routes_{messages,chats,groups,contacts,session}.go`
+  (byte-identical bodies, HTTP contracts untouched).
+- **Event dispatcher extracted from `main.go`** to `wa.Service.HandleEvent`
+  (`internal/wa/dispatcher.go`, now testable; `main.go` 310 → 229 lines is pure
+  bootstrap).
+- **`sendAppState` seam** (`appStateSender` interface) makes the two-level
+  LTHash-conflict recovery unit-testable; **`_ro_connect`** context manager
+  unifies the 10 read-only SQLite openings in `db.py`.
 - Bridge: 49 REST handlers deduplicated behind `decodeJSON` / `parseJID` /
   `respondErr` / `respondOK` (`-176` lines); `/api/send` errors unified to JSON; the
   two remaining ad-hoc SQL queries moved out of the `api` layer into `store` methods.

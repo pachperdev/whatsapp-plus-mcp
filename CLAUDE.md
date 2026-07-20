@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Model Context Protocol (MCP) server for a **personal WhatsApp account**, built on two cooperating processes:
 
-1. **Go WhatsApp Bridge** (`whatsapp-bridge/`): connects to WhatsApp Web's multidevice API via [whatsmeow](https://github.com/tulir/whatsmeow), handles QR auth, persists message/chat history to SQLite, listens for live events, and exposes a token-authenticated REST API on `127.0.0.1:8080`. Modularized into `main.go` (bootstrap + event dispatcher + HTTP lifecycle) and `internal/{config,media,auth,store,wa,api}`.
+1. **Go WhatsApp Bridge** (`whatsapp-bridge/`): connects to WhatsApp Web's multidevice API via [whatsmeow](https://github.com/tulir/whatsmeow), handles QR auth, persists message/chat history to SQLite, listens for live events, and exposes a token-authenticated REST API on `127.0.0.1:8080`. Modularized into `main.go` (bootstrap + HTTP lifecycle) and `internal/{config,media,auth,store,wa,api}`; the event dispatcher lives in `internal/wa/dispatcher.go` (`Service.HandleEvent`).
 
 2. **Python MCP Server** (`whatsapp-mcp-server/`): the `whatsapp_mcp` package (`config` → `models` → `db` → `bridge` → `tools`/`prompts` → `server`) exposes WhatsApp functionality as MCP tools. **Reads** come straight from the SQLite DB (`db.py`); **writes/actions** go to the Go bridge over HTTP (`bridge.py`).
 
@@ -25,7 +25,7 @@ Every action-style tool is three small pieces, all following the same shape:
 2. **Client function** in `whatsapp_mcp/bridge.py`: a thin wrapper, almost always `_bridge_post("<name>", payload)` (or `_bridge_get` for reads).
 3. **MCP tool** in `whatsapp_mcp/tools.py`: `@mcp.tool(annotations=...)` that calls the `bridge.py` function.
 
-Event-driven features (incoming edits, votes, presence, ban status) instead add a `case` to the dispatcher in `main.go` and a handler method in `internal/wa/events.go` that persists to SQLite. `Build*`-based sends (`BuildEdit`, `BuildRevoke`, `BuildPollCreation`, `BuildPollVote`) all go out via `SendMessage`. For available whatsmeow methods, see the [whatsmeow docs](https://pkg.go.dev/go.mau.fi/whatsmeow) or the existing handlers as templates.
+Event-driven features (incoming edits, votes, presence, ban status) instead add a `case` to the dispatcher in `internal/wa/dispatcher.go` (`Service.HandleEvent`) and a handler method in `internal/wa/events.go` that persists to SQLite. `Build*`-based sends (`BuildEdit`, `BuildRevoke`, `BuildPollCreation`, `BuildPollVote`) all go out via `SendMessage`. For available whatsmeow methods, see the [whatsmeow docs](https://pkg.go.dev/go.mau.fi/whatsmeow) or the existing handlers as templates.
 
 ### Security model (important — not optional)
 - The bridge binds **loopback only** (`127.0.0.1:8080`), never `0.0.0.0`. The bind address (`WHATSAPP_BRIDGE_ADDR`) is validated to be loopback at startup (`internal/config`).
