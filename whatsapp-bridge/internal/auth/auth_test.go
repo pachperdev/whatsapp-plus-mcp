@@ -88,10 +88,13 @@ func TestGetOrCreateBridgeToken(t *testing.T) {
 
 	t.Run("archivo vacío regenera", func(t *testing.T) {
 		// Un archivo vacío (p. ej. de un crash a mitad de escritura) no es un token
-		// válido: la auth fail-closed rechazaría todo. Debe regenerarse.
+		// válido: la auth fail-closed rechazaría todo. Debe regenerarse. El fixture
+		// se crea a propósito con 0644: os.WriteFile NO re-aplica permisos sobre un
+		// archivo existente, así que la regeneración debe forzar 0600 explícitamente
+		// o el token vivo quedaría legible por otros usuarios.
 		dir := t.TempDir()
 		path := filepath.Join(dir, ".bridge_token")
-		if err := os.WriteFile(path, []byte(""), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
 			t.Fatalf("setup: %v", err)
 		}
 		tok, err := GetOrCreateBridgeToken(dir)
@@ -107,6 +110,9 @@ func TestGetOrCreateBridgeToken(t *testing.T) {
 		}
 		if string(data) != tok {
 			t.Errorf("el token regenerado debe persistirse: got %q, want %q", data, tok)
+		}
+		if mode := tokenMode(t, dir); mode != 0o600 {
+			t.Errorf("modo tras regenerar sobre archivo laxo: got %o, want %o", mode, 0o600)
 		}
 	})
 

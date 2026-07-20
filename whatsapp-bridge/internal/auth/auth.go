@@ -34,6 +34,12 @@ func GetOrCreateBridgeToken(storeDir string) (string, error) {
 	if err := os.WriteFile(path, []byte(tok), 0600); err != nil {
 		return "", fmt.Errorf("failed to persist token: %v", err)
 	}
+	// os.WriteFile solo aplica el modo al CREAR el archivo: si regeneramos sobre un
+	// .bridge_token preexistente (vacío/whitespace) con permisos laxos (p. ej. 0644),
+	// el token vivo quedaría legible por otros usuarios. Forzamos 0600 siempre.
+	if err := os.Chmod(path, 0600); err != nil {
+		return "", fmt.Errorf("failed to secure token file: %v", err)
+	}
 	return tok, nil
 }
 
