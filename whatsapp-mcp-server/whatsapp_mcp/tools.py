@@ -518,6 +518,21 @@ def archive_chat(chat_jid: str, archive: bool = True) -> Dict[str, Any]:
     success, status_message = bridge.archive_chat(chat_jid, archive)
     return {"success": success, "message": status_message}
 
+@mcp.tool(annotations=_DESTRUCTIVE)
+def delete_chat(chat_jid: str, delete_media: bool = False) -> Dict[str, Any]:
+    """Delete an entire chat from your chat list (removes it on all your devices).
+
+    This is an app-state mutation (same family as archive/pin/mute), so it may transiently
+    fail with a 409 LTHash "recovery in progress" and need a retry after a few seconds.
+    It does NOT delete the group itself for other members — to leave a group use leave_group.
+
+    Args:
+        chat_jid: The chat/group JID
+        delete_media: Also delete the chat's downloaded media from local storage (store/<chat>/)
+    """
+    success, status_message = bridge.delete_chat(chat_jid, delete_media)
+    return {"success": success, "message": status_message}
+
 @mcp.tool(annotations=_WRITE_IDEMPOTENT)
 def mark_chat(chat_jid: str, read: bool = True) -> Dict[str, Any]:
     """Mark an entire chat as read or unread.

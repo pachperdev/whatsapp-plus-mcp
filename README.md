@@ -1,17 +1,17 @@
 # WhatsApp Plus MCP
 
-**Tu WhatsApp personal como servidor MCP: 65 herramientas, login por QR autogestionado y cero pasos manuales.**
+**Tu WhatsApp personal como servidor MCP: 66 herramientas, login por QR autogestionado y cero pasos manuales.**
 
 Conecta tu cuenta personal de WhatsApp a Claude (o a cualquier agente compatible con MCP) para leer, buscar y enviar mensajes, administrar grupos, manejar multimedia y más — todo a través de tu propia cuenta, ejecutándose 100 % en tu máquina. Nada pasa por servidores de terceros.
 
-> Fork profesionalizado de [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) (~12 tools originales → **65 tools**), con hardening de seguridad, arquitectura modular, suite de tests, supervisor de procesos y login plug-and-play.
+> Fork profesionalizado de [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) (~12 tools originales → **66 tools**), con hardening de seguridad, arquitectura modular, suite de tests, supervisor de procesos y login plug-and-play.
 
 ---
 
 ## ✨ Lo que lo hace diferente
 
 - **Login autogestionado**: pide "conéctame a WhatsApp" y el plugin hace todo — lanza su propio bridge, valida si ya hay una sesión utilizable (nunca duplica conexiones), y solo si hace falta abre el **código QR en tu visor de imágenes** (instantáneo, se refresca solo con cada rotación) y también lo muestra en la conversación. Escaneas y listo.
-- **65 herramientas MCP**: mensajes (enviar, responder, editar, borrar, reaccionar, destacar), búsqueda e historial, grupos (crear, administrar, invitaciones), multimedia (imágenes, notas de voz, documentos, descarga), presencia, encuestas, contactos, estados de chat y gestión de sesión.
+- **66 herramientas MCP**: mensajes (enviar, responder, editar, borrar, reaccionar, destacar), búsqueda e historial, grupos (crear, administrar, invitaciones), multimedia (imágenes, notas de voz, documentos, descarga), presencia, encuestas, contactos, estados de chat y gestión de sesión.
 - **Supervisor integrado**: el servidor MCP administra el ciclo de vida del bridge Go (adopta uno sano, compila el binario si falta, recicla sesiones zombie). El usuario no toca ninguna terminal.
 - **Seguridad por diseño**: API solo en loopback con token de autenticación, validación anti-exfiltración de rutas de archivos, datos siempre en tu máquina.
 - **MCP estándar y transversal**: funciona como plugin de Claude Code **y** como servidor MCP clásico en Claude Desktop, Cursor, Gemini CLI, Codex CLI o cualquier cliente MCP.
@@ -31,7 +31,7 @@ Dos procesos cooperando en tu máquina:
 ```
 
 - **Bridge Go** (`whatsapp-bridge/`): conecta con la API multidevice de WhatsApp Web vía [whatsmeow](https://github.com/tulir/whatsmeow), maneja la autenticación QR, persiste mensajes/chats en SQLite y expone una REST API autenticada solo en loopback.
-- **Servidor MCP Python** (`whatsapp-mcp-server/`): expone las 65 tools. Las **lecturas** consultan SQLite directamente; las **acciones** van al bridge por HTTP. Además **supervisa** al bridge: lo lanza, lo adopta o lo recicla según haga falta.
+- **Servidor MCP Python** (`whatsapp-mcp-server/`): expone las 66 tools. Las **lecturas** consultan SQLite directamente; las **acciones** van al bridge por HTTP. Además **supervisa** al bridge: lo lanza, lo adopta o lo recicla según haga falta.
 
 ## 📋 Requisitos
 
@@ -111,7 +111,7 @@ El agente llama a `login_with_qr` y el plugin hace el resto:
 
 La sesión persiste ~20 días; después WhatsApp puede pedir re-vincular (mismo flujo, un escaneo).
 
-## 🧰 Las 65 herramientas
+## 🧰 Las 66 herramientas
 
 | Área | Herramientas |
 |------|--------------|
@@ -119,7 +119,7 @@ La sesión persiste ~20 días; después WhatsApp puede pedir re-vincular (mismo 
 | **Leer/buscar** | `list_messages`, `list_chats`, `search_contacts`, `list_all_contacts`, `get_message_context`, `get_unread_chats`, `get_last_interaction`, `get_chat`, `get_direct_chat_by_contact`, `get_contact_chats`, `list_groups`, `refresh_contacts` |
 | **Enviar** | `send_message` (con reply y @menciones), `send_file`, `send_audio_message` (nota de voz), `send_poll`, `vote_poll`, `send_typing` |
 | **Mensajes** | `react_to_message`, `edit_message`, `delete_message`, `star_message`, `mark_as_read`, `download_media` |
-| **Chats** | `mute_chat`, `pin_chat`, `archive_chat`, `mark_chat`, `get_chat_settings`, `set_disappearing_messages`, `request_more_history` |
+| **Chats** | `mute_chat`, `pin_chat`, `archive_chat`, `delete_chat`, `mark_chat`, `get_chat_settings`, `set_disappearing_messages`, `request_more_history` |
 | **Grupos** | `create_group`, `update_group_participants`, `get_group_participants`, `get_group_invite_link`, `reset_group_invite_link`, `join_group`, `leave_group`, `set_group_name/topic/description/announce/locked/photo`, aprobación de ingreso, solicitudes pendientes, invitaciones |
 | **Identidad/presencia** | `check_whatsapp`, `get_user_info`, `get_user_devices`, `get_profile_picture`, `get_business_profile`, `block_contact`, `unblock_contact`, `set/subscribe/get_presence`, `set_status_message`, `set_default_disappearing` |
 

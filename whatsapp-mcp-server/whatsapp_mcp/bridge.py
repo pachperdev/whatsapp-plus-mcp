@@ -452,6 +452,16 @@ def archive_chat(chat_jid: str, archive: bool = True) -> Tuple[bool, str]:
     return d.get("success", False), d.get("message", "")
 
 
+def delete_chat(chat_jid: str, delete_media: bool = False) -> Tuple[bool, str]:
+    """Borra un chat completo de la lista (mutacion de app-state).
+
+    delete_media=True borra tambien la media descargada del chat en store/<chat>/.
+    Al ser app-state puede devolver el 409 LTHash transitorio: reintentar en unos segundos.
+    """
+    d = _bridge_post("delete_chat", {"chat_jid": chat_jid, "delete_media": delete_media})
+    return d.get("success", False), d.get("message", "")
+
+
 def mark_chat(chat_jid: str, read: bool = True) -> Tuple[bool, str]:
     """Marca un chat entero como leido (read=True) o no leido (read=False)."""
     d = _bridge_post("mark_chat", {"chat_jid": chat_jid, "enable": read})

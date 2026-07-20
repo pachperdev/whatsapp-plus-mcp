@@ -10,7 +10,7 @@ A Model Context Protocol (MCP) server for a **personal WhatsApp account**, built
 
 2. **Python MCP Server** (`whatsapp-mcp-server/`): the `whatsapp_mcp` package (`config` → `models` → `db` → `bridge` → `tools`/`prompts` → `server`) exposes WhatsApp functionality as MCP tools. **Reads** come straight from the SQLite DB (`db.py`); **writes/actions** go to the Go bridge over HTTP (`bridge.py`).
 
-> **This fork is far ahead of upstream.** It exposes **65 MCP tools** (upstream had ~12). See `CHANGELOG.md` for the milestone history. Commits and code comments are written in Spanish.
+> **This fork is far ahead of upstream.** It exposes **66 MCP tools** (upstream had ~12). See `CHANGELOG.md` for the milestone history. Commits and code comments are written in Spanish.
 
 ## Architecture
 
@@ -62,13 +62,13 @@ uv run main.py                 # expects the bridge running + DB at ../whatsapp-
 ```
 Dependencies (`pyproject.toml`): `mcp[cli]`, `requests`, `httpx`; Python `>=3.11`. The server uses a global `requests.Session()` for keep-alive pooling to the bridge.
 
-## MCP Tools (65)
+## MCP Tools (66)
 
 Full list and signatures live in `whatsapp-mcp-server/whatsapp_mcp/tools.py` (`@mcp.tool()` decorators). Grouped by area:
 - **Read/search**: `search_contacts`, `list_all_contacts`, `refresh_contacts`, `list_messages`, `list_chats`, `get_chat`, `get_direct_chat_by_contact`, `get_contact_chats`, `get_last_interaction`, `get_message_context`, `get_unread_chats`, `list_groups`.
 - **Send**: `send_message` (supports `reply_to` + `@number` mentions), `send_file`, `send_audio_message`, `send_poll`, `vote_poll`, `send_typing`.
 - **Message ops**: `react_to_message`, `edit_message`, `delete_message`, `star_message`, `mark_as_read`, `download_media`.
-- **Chat state**: `mute_chat`, `pin_chat`, `archive_chat`, `mark_chat`, `get_chat_settings`, `set_disappearing_messages`, `request_more_history`.
+- **Chat state**: `mute_chat`, `pin_chat`, `archive_chat`, `delete_chat`, `mark_chat`, `get_chat_settings`, `set_disappearing_messages`, `request_more_history`.
 - **Groups**: `create_group`, `update_group_participants`, `get_group_participants`, `get_group_invite_link` (pure read) / `reset_group_invite_link` (revokes + regenerates), `join_group`, `leave_group`, `set_group_name/topic/description/announce/locked/photo`, join-approval + join-request tools, invite-link info/join (`get_group_info_from_invite`/`join_group_with_invite` operate on LEGACY native group-invite messages; modern WhatsApp clients share invites as plain-text links — route those to `join_group`, which accepts full links including `?mode=gi_t`).
 - **Contacts/identity/presence**: `check_whatsapp`, `get_user_info`, `get_user_devices`, `get_profile_picture`, `get_business_profile`, `block_contact`/`unblock_contact`, `set/subscribe/get_presence`.
 - **Account/session**: `get_status`, `set_status_message`, `set_default_disappearing`, `logout`.

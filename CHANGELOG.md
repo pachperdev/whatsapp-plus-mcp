@@ -11,6 +11,14 @@ Forked from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).
 
 ## [Unreleased]
 
+### Added
+
+- **`delete_chat` tool (#66)**: delete an entire chat from the chat list on all your
+  devices, via the WhatsApp app-state sync (`appstate.BuildDeleteChat`, unlocked by the
+  whatsmeow bump above). Optional `delete_media` also removes the chat's downloaded media
+  under `store/<chat>/`. Same 3-piece pattern as the other chat-state tools; being an
+  app-state mutation it may transiently return the `409 LTHash` recovery and need a retry.
+
 ### Security
 
 - **Token regeneration no longer trusts `chmod`** (`GetOrCreateBridgeToken`):
