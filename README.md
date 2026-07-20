@@ -1,4 +1,4 @@
-# WhatsApp MCP Plugin
+# WhatsApp Plus MCP
 
 **Tu WhatsApp personal como servidor MCP: 65 herramientas, login por QR autogestionado y cero pasos manuales.**
 
@@ -43,27 +43,25 @@ Dos procesos cooperando en tu máquina:
 
 ## 🚀 Instalación
 
-### Opción A — Plugin de Claude Code (recomendada para el equipo)
+### Opción A — Plugin de Claude Code (recomendada)
 
-Este repositorio es a la vez el **plugin** y el **marketplace corporativo**. Desde Claude Code:
+Este repositorio es a la vez el **plugin** y su **marketplace**. Desde Claude Code:
 
 ```
-/plugin marketplace add mauricioDevApp/whatsapp-mcp-plugin
-/plugin install whatsapp@pachperdev-tools
+/plugin marketplace add pachperdev/whatsapp-plus-mcp
+/plugin install whatsapp-plus@pachperdev
 ```
 
-> El repo es privado: necesitas acceso al repositorio y `gh auth login` configurado.
-
-Para preconfigurar el marketplace en un proyecto del equipo (todos lo reciben al abrir el repo), agrega a su `.claude/settings.json`:
+Para preconfigurar el marketplace en un proyecto (todos lo reciben al abrir el repo), agrega a su `.claude/settings.json`:
 
 ```json
 {
   "extraKnownMarketplaces": {
-    "pachperdev-tools": {
-      "source": { "source": "github", "repo": "mauricioDevApp/whatsapp-mcp-plugin" }
+    "pachperdev": {
+      "source": { "source": "github", "repo": "pachperdev/whatsapp-plus-mcp" }
     }
   },
-  "enabledPlugins": { "whatsapp@pachperdev-tools": true }
+  "enabledPlugins": { "whatsapp-plus@pachperdev": true }
 }
 ```
 
@@ -74,13 +72,13 @@ En modo plugin, **todos los datos viven en `~/.whatsapp-mcp/`** (sesión, histor
 Clona el repo y registra el servidor en tu cliente MCP. El comando es siempre el mismo:
 
 ```bash
-git clone https://github.com/mauricioDevApp/whatsapp-mcp-plugin.git
+git clone https://github.com/pachperdev/whatsapp-plus-mcp.git
 ```
 
 **Claude Code**: el repo ya incluye `.mcp.json` — basta abrir el proyecto. O manual:
 
 ```bash
-claude mcp add whatsapp -- uv --directory /ruta/al/repo/whatsapp-mcp-server run main.py
+claude mcp add whatsapp-plus -- uv --directory /ruta/al/repo/whatsapp-mcp-server run main.py
 ```
 
 **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
@@ -88,7 +86,7 @@ claude mcp add whatsapp -- uv --directory /ruta/al/repo/whatsapp-mcp-server run 
 ```json
 {
   "mcpServers": {
-    "whatsapp": {
+    "whatsapp-plus": {
       "command": "uv",
       "args": ["--directory", "/ruta/al/repo/whatsapp-mcp-server", "run", "main.py"]
     }
@@ -96,7 +94,7 @@ claude mcp add whatsapp -- uv --directory /ruta/al/repo/whatsapp-mcp-server run 
 }
 ```
 
-**Cursor** (`~/.cursor/mcp.json`), **Gemini CLI** (`~/.gemini/settings.json` → `mcpServers`) y **Codex CLI** (`~/.codex/config.toml` → `[mcp_servers.whatsapp]`) usan la misma forma: comando `uv` con argumentos `--directory /ruta/al/repo/whatsapp-mcp-server run main.py`.
+**Cursor** (`~/.cursor/mcp.json`), **Gemini CLI** (`~/.gemini/settings.json` → `mcpServers`) y **Codex CLI** (`~/.codex/config.toml` → `[mcp_servers.whatsapp-plus]`) usan la misma forma: comando `uv` con argumentos `--directory /ruta/al/repo/whatsapp-mcp-server run main.py`.
 
 ## 🔐 Primer uso: conectar tu WhatsApp
 
@@ -150,7 +148,7 @@ Este proyecto usa [whatsmeow](https://github.com/tulir/whatsmeow), un cliente **
 | `WHATSAPP_PLUGIN_MODE` | — | `1` = datos en `~/.whatsapp-mcp/` (lo setea el plugin) |
 | `WHATSAPP_STORE_DIR` | `<repo>/whatsapp-bridge/store` | Directorio del store (sesión, mensajes, media) |
 | `WHATSAPP_BRIDGE_BIN` | `<repo>/whatsapp-bridge/whatsapp-bridge` | Binario del bridge (si falta: se descarga del release o se auto-compila) |
-| `WHATSAPP_RELEASE_REPO` | `mauricioDevApp/whatsapp-mcp-plugin` | Repo GitHub del que se descargan los binarios precompilados |
+| `WHATSAPP_RELEASE_REPO` | `pachperdev/whatsapp-plus-mcp` | Repo GitHub del que se descargan los binarios precompilados |
 | `WHATSAPP_BRIDGE_ADDR` | `127.0.0.1:8080` | Dirección del bridge (validada como loopback) |
 | `WHATSAPP_MEDIA_ALLOWED_DIRS` | — | Lista blanca de directorios para `send_file` |
 | `WHATSAPP_MESSAGES_DB` / `WHATSAPP_SESSION_DB` / `WHATSAPP_BRIDGE_TOKEN_FILE` / `WHATSAPP_BRIDGE_LOG` | derivados del store | Overrides finos |

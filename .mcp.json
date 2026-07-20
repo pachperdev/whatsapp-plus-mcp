@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "whatsapp": {
+    "whatsapp-plus": {
       "command": "uv",
       "args": [
         "--directory",

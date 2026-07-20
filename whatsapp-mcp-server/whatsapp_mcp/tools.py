@@ -10,7 +10,7 @@ from whatsapp_mcp import bridge, db
 from whatsapp_mcp.models import Chat, Contact, MessageContext
 
 # Initialize FastMCP server
-mcp = FastMCP("whatsapp")
+mcp = FastMCP("whatsapp-plus")
 
 # Perfiles de anotación MCP reutilizables (hints para el cliente: qué tools solo leen,
 # cuáles modifican, cuáles son destructivas). readOnly=True => el cliente puede no pedir

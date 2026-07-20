@@ -1,16 +1,15 @@
 {
-  "name": "whatsapp",
-  "description": "Personal WhatsApp as MCP: 65 tools (messages, groups, media, presence) with self-managed QR login — the plugin supervises its own Go bridge.",
+  "name": "whatsapp-plus",
+  "description": "WhatsApp Plus MCP: 65 tools (messages, groups, media, presence) for your personal WhatsApp, with self-managed QR login — the plugin supervises its own Go bridge.",
   "version": "1.0.0",
   "author": {
-    "name": "Mauricio Pacheco",
-    "email": "86799932+pachperdev@users.noreply.github.com"
+    "name": "Mauricio Pacheco (pachperdev)"
   },
-  "homepage": "https://github.com/mauricioDevApp/whatsapp-mcp-plugin",
-  "repository": "https://github.com/mauricioDevApp/whatsapp-mcp-plugin",
+  "homepage": "https://github.com/pachperdev/whatsapp-plus-mcp",
+  "repository": "https://github.com/pachperdev/whatsapp-plus-mcp",
   "license": "MIT",
   "mcpServers": {
-    "whatsapp": {
+    "whatsapp-plus": {
       "command": "uv",
       "args": [
         "--directory",

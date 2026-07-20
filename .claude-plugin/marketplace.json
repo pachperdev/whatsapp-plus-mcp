@@ -1,15 +1,14 @@
 {
-  "name": "pachperdev-tools",
+  "name": "pachperdev",
   "owner": {
-    "name": "pachperdev",
-    "email": "86799932+pachperdev@users.noreply.github.com"
+    "name": "Mauricio Pacheco"
   },
-  "description": "Marketplace de herramientas MCP.",
+  "description": "Open-source MCP plugins by pachperdev.",
   "plugins": [
     {
-      "name": "whatsapp",
+      "name": "whatsapp-plus",
       "source": "./",
-      "description": "WhatsApp personal como MCP: 65 tools con login QR autogestionado (el plugin supervisa su propio bridge Go).",
+      "description": "WhatsApp Plus: your personal WhatsApp as MCP — 65 tools with self-managed QR login.",
       "author": {
         "name": "Mauricio Pacheco"
       }
