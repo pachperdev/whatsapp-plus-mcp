@@ -88,13 +88,12 @@ class TestContratoErroresHTTP:
         assert msg.startswith("Error parsing response"), f"prefijo equivocado: {msg}"
         assert "<html>proxy</html>" in msg, "debe incluir el body recibido"
 
-    def test_send_message_json_invalido_de_requests_real_cae_en_request_error(self, monkeypatch):
-        """BUG documentado (comportamiento actual, no blindado como correcto): desde
-        requests>=2.27, response.json() lanza requests.exceptions.JSONDecodeError, que
-        ES un RequestException; el `except requests.RequestException` (bridge.py:93) lo
-        captura ANTES que el `except json.JSONDecodeError` (bridge.py:95). Con una
-        Response real el prefijo observable es 'Request error:' y la rama
-        'Error parsing response' queda inalcanzable."""
+    def test_send_message_json_invalido_de_requests_real_reporta_error_parsing(self, monkeypatch):
+        """Contrato correcto con una Response REAL: desde requests>=2.27, response.json()
+        lanza requests.exceptions.JSONDecodeError, que hereda de RequestException Y de
+        json.JSONDecodeError. Un 200 con body no-JSON es un problema de PARSING (proxy,
+        HTML de error, body truncado), no de red: el prefijo observable debe ser
+        'Error parsing response' e incluir el body para diagnostico."""
         monkeypatch.setattr(
             bridge_mod._SESSION, "post",
             lambda url, json=None, headers=None, timeout=None: _RespuestaFalsa(
@@ -104,9 +103,10 @@ class TestContratoErroresHTTP:
         )
         ok, msg = bridge_mod.send_message("549111", "hola")
         assert not ok
-        assert msg.startswith("Request error:"), (
-            f"comportamiento actual documentado (rama parsing sombreada): {msg}"
+        assert msg.startswith("Error parsing response"), (
+            f"un 200 con body no-JSON es error de parsing, no de red: {msg}"
         )
+        assert "no-json" in msg, "debe incluir el body recibido"
 
     def test_send_message_sin_destinatario_no_toca_la_red(self, monkeypatch):
         """La validacion de input corta ANTES de cualquier request."""
@@ -155,6 +155,24 @@ class TestContratoErroresHTTP:
         data = bridge_mod.get_status()
         assert data["success"] is False
         assert data["message"] == "Error parsing response", f"contrato roto: {data}"
+
+    def test_get_status_json_invalido_de_requests_real_reporta_error_parsing(self, monkeypatch):
+        """Mismo contrato con una Response REAL (requests>=2.27): su JSONDecodeError
+        hereda de RequestException, pero un 200 con body corrupto debe reportarse como
+        'Error parsing response', no como 'Request error:' (get_status es la tool de
+        diagnostico y el prefijo distingue bridge caido de bridge respondiendo basura)."""
+        monkeypatch.setattr(
+            bridge_mod._SESSION, "get",
+            lambda url, headers=None, timeout=None: _RespuestaFalsa(
+                status_code=200, text="basura",
+                json_exc=requests.exceptions.JSONDecodeError("Expecting value", "basura", 0),
+            ),
+        )
+        data = bridge_mod.get_status()
+        assert data["success"] is False
+        assert data["message"] == "Error parsing response", (
+            f"un 200 con body no-JSON es error de parsing, no de red: {data}"
+        )
 
 
 class TestEnsureBridge:
