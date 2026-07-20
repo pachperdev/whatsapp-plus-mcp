@@ -25,3 +25,7 @@ whatsapp-bridge/store/
 
 # Artefactos de GoReleaser (builds locales de snapshot)
 dist/
+
+# Codex CLI (herramienta personal, no del proyecto)
+.codex/
+AGENTS.md
