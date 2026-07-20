@@ -78,7 +78,7 @@ func TestServer_Unauthorized(t *testing.T) {
 	for _, path := range []string{
 		"/api/send", "/api/react", "/api/star",
 		"/api/group_participants", "/api/set_group_name",
-		"/api/edit", "/api/mark_read",
+		"/api/edit", "/api/mark_read", "/api/delete_chat",
 	} {
 		rec := doReq(t, h, path, "", `{}`)
 		if rec.Code != http.StatusUnauthorized {
@@ -93,6 +93,7 @@ func TestServer_InvalidBody(t *testing.T) {
 	for _, path := range []string{
 		"/api/react", "/api/star", "/api/mark_read",
 		"/api/group_participants", "/api/set_group_name",
+		"/api/delete_chat",
 	} {
 		rec := doReq(t, h, path, testToken, invalidJSON)
 		wantErrJSON(t, rec, http.StatusBadRequest, "invalid request")
@@ -102,7 +103,7 @@ func TestServer_InvalidBody(t *testing.T) {
 // (c) 400 + mensaje de JID correcto ("invalid chat_jid" / "invalid group_jid").
 func TestServer_InvalidJID(t *testing.T) {
 	h := newTestServer(t)
-	for _, path := range []string{"/api/react", "/api/star", "/api/mark_read"} {
+	for _, path := range []string{"/api/react", "/api/star", "/api/mark_read", "/api/delete_chat"} {
 		rec := doReq(t, h, path, testToken, badChatBody)
 		wantErrJSON(t, rec, http.StatusBadRequest, "invalid chat_jid")
 	}

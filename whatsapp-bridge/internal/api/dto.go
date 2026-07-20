@@ -111,6 +111,12 @@ type ChatStateRequest struct {
 	Duration int    `json:"duration_hours,omitempty"` // solo mute: 0 = indefinido
 }
 
+// DeleteChatRequest borra un chat completo de la lista (opcionalmente su media local)
+type DeleteChatRequest struct {
+	ChatJID     string `json:"chat_jid"`
+	DeleteMedia bool   `json:"delete_media,omitempty"` // true = borrar tambien la media descargada en store/
+}
+
 // StarRequest stars/unstars a message
 type StarRequest struct {
 	ChatJID   string `json:"chat_jid"`

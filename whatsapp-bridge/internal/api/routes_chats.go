@@ -92,6 +92,27 @@ func registerChatRoutes(mux *http.ServeMux, svc *wa.Service, client *whatsmeow.C
 		respondOK(w, map[string]interface{}{"message": "archive updated"})
 	}))
 
+	// Handler: borrar un chat completo de la lista. Es una mutacion de app-state (misma
+	// familia que archive/pin/mute): puede devolver el 409 LTHash transitorio y requerir
+	// reintento. delete_media=true borra ademas la media descargada en store/<chat>/.
+	mux.HandleFunc("/api/delete_chat", withAuth(token, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req DeleteChatRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		jid, ok := parseJID(w, req.ChatJID, "chat_jid")
+		if !ok {
+			return
+		}
+		key, ts := svc.LastMsgKey(jid)
+		if err := sendAppState(client, appstate.BuildDeleteChat(jid, ts, key, req.DeleteMedia)); err != nil {
+			respondErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		respondOK(w, map[string]interface{}{"message": "chat deleted"})
+	}))
+
 	// Handler: mark chat read / unread
 	mux.HandleFunc("/api/mark_chat", withAuth(token, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
