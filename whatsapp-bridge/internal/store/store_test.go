@@ -452,3 +452,53 @@ func TestPollSender(t *testing.T) {
 		t.Errorf("id inexistente: got %v, want sql.ErrNoRows", err)
 	}
 }
+
+func TestMediaDirForChat(t *testing.T) {
+	base := filepath.Join(string(os.PathSeparator)+"var", "store")
+	tests := []struct {
+		name   string
+		jid    string
+		wantOK bool
+	}{
+		{"jid directo válido", "111@s.whatsapp.net", true},
+		{"jid de grupo válido", "120363@g.us", true},
+		{"device id con ':' se sanitiza a un nombre dentro del store", "111:2@s.whatsapp.net", true},
+		{"vacío resolvería al store mismo", "", false},
+		{"'.' resuelve al store mismo", ".", false},
+		{"'..' escapa al directorio padre", "..", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := mediaDirForChat(base, tc.jid)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v (dir=%q)", ok, tc.wantOK, got)
+			}
+			if ok && !strings.HasPrefix(got, filepath.Clean(base)+string(os.PathSeparator)) {
+				t.Errorf("dir %q no quedó estrictamente dentro de %q", got, base)
+			}
+		})
+	}
+}
+
+// TestDeleteChatMediaGuard blinda la regresión del path-traversal: un chat_jid vacío o
+// con ".." NO debe hacer que os.RemoveAll borre el store (sesión/token/DBs) ni su
+// directorio padre. La guarda debe rechazarlos con error dejando el store intacto.
+func TestDeleteChatMediaGuard(t *testing.T) {
+	s := newTestStore(t)
+	// Centinela dentro del store (simula whatsapp.db): NO debe desaparecer.
+	sentinel := filepath.Join(s.storeDir, "whatsapp.db")
+	if err := os.WriteFile(sentinel, []byte("sesión"), 0o600); err != nil {
+		t.Fatalf("no pude crear el centinela: %v", err)
+	}
+	for _, jid := range []string{"", "..", "."} {
+		if _, err := s.DeleteChat(jid, true); err == nil {
+			t.Errorf("DeleteChat(%q, deleteMedia=true) debería devolver error de guarda, no nil", jid)
+		}
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("el centinela del store fue borrado por una guarda fallida: %v", err)
+	}
+	if _, err := os.Stat(s.storeDir); err != nil {
+		t.Fatalf("el store entero fue borrado: %v", err)
+	}
+}

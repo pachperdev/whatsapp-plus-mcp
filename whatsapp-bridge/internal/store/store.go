@@ -245,12 +245,34 @@ func (store *MessageStore) DeleteChat(chatJID string, deleteMedia bool) (int64, 
 	}
 
 	if deleteMedia {
-		safeChat := strings.NewReplacer(":", "_", "/", "_", "\\", "_").Replace(chatJID)
-		if err := os.RemoveAll(filepath.Join(store.storeDir, safeChat)); err != nil {
+		mediaDir, ok := mediaDirForChat(store.storeDir, chatJID)
+		if !ok {
+			// Guarda anti-traversal: un chat_jid vacío o con ".." haría que la ruta
+			// resuelva al store mismo o a su directorio padre, y os.RemoveAll borraría
+			// la sesión entera (whatsapp.db/messages.db/token) o incluso el $HOME en
+			// modo plugin. No borramos media en ese caso; el borrado de filas ya quedó hecho.
+			return deleted, fmt.Errorf("delete_chat: ruta de media fuera del store para chat_jid=%q; se omite el borrado de media", chatJID)
+		}
+		if err := os.RemoveAll(mediaDir); err != nil {
 			return deleted, err
 		}
 	}
 	return deleted, nil
+}
+
+// mediaDirForChat resuelve el directorio de media de un chat y valida que quede
+// ESTRICTAMENTE por debajo de storeDir. Sanitiza el jid igual que DownloadMedia
+// (`:` `/` `\` -> `_`), pero eso NO neutraliza ".." ni el string vacío; por eso además
+// exige contención real (filepath.Clean + prefijo con separador). Devuelve ok=false si la
+// ruta es el propio store o escapa de él, evitando un os.RemoveAll catastrófico.
+func mediaDirForChat(storeDir, chatJID string) (string, bool) {
+	safeChat := strings.NewReplacer(":", "_", "/", "_", "\\", "_").Replace(chatJID)
+	base := filepath.Clean(storeDir)
+	target := filepath.Clean(filepath.Join(base, safeChat))
+	if target == base || !strings.HasPrefix(target, base+string(os.PathSeparator)) {
+		return "", false
+	}
+	return target, true
 }
 
 // ApplyMessageEdit refleja un edit entrante: reemplaza el contenido por el texto
