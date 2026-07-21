@@ -35,9 +35,11 @@ if PLUGIN_MODE:
     _DATA_DIR = os.path.expanduser(os.path.join("~", ".whatsapp-mcp"))
     _STORE_DIR = os.path.join(_DATA_DIR, "store")
     _DEFAULT_BRIDGE_BIN = os.path.join(_DATA_DIR, "bin", "whatsapp-bridge")
+    _DEFAULT_MODELS_DIR = os.path.join(_DATA_DIR, "models")
 else:
     _STORE_DIR = os.path.join(BRIDGE_SRC_DIR, "store")
     _DEFAULT_BRIDGE_BIN = os.path.join(BRIDGE_SRC_DIR, "whatsapp-bridge")
+    _DEFAULT_MODELS_DIR = os.path.join(_STORE_DIR, "models")
 
 # Config por variables de entorno con defaults segun el modo. Los env vars explicitos
 # siempre ganan (tests, layouts a medida, otros agentes MCP).
@@ -63,3 +65,32 @@ BRIDGE_LOG_PATH = os.environ.get("WHATSAPP_BRIDGE_LOG", os.path.join(STORE_DIR, 
 # Repo GitHub del que se descargan los binarios precompilados del bridge (GitHub
 # Releases + checksums SHA256). La API sigue el redirect si el repo se transfiere.
 RELEASE_REPO = os.environ.get("WHATSAPP_RELEASE_REPO", "pachperdev/whatsapp-plus-mcp")
+
+
+def _env_int(name: str, default: int) -> int:
+    """Entero desde env con fallback: un valor basura no debe tumbar el server al importar."""
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        logger.warning(f"{name} invalido; usando default {default}")
+        return default
+
+
+# --- Transcripcion local de notas de voz (extra opcional `transcription`) ---
+# STT 100% local via faster-whisper; estas vars controlan modelo, recursos y limites.
+# "auto" = elegir el tier segun RAM/cores de la maquina (ver transcription.resolve_model).
+# Solo se aceptan tiny/base/small/large-v3-turbo (allowlist en transcription.py: cualquier
+# otro string seria tratado como repo-id de Hugging Face y descargado); un valor invalido
+# se ignora con warning y cae a la heuristica auto.
+TRANSCRIPTION_MODEL = os.environ.get("WHATSAPP_TRANSCRIPTION_MODEL", "auto")
+# Donde se descargan/cachean los pesos del modelo: junto al resto de datos mutables
+# (~/.whatsapp-mcp/models en modo plugin; <store>/models en modo repo).
+TRANSCRIPTION_MODELS_DIR = os.environ.get(
+    "WHATSAPP_TRANSCRIPTION_MODELS_DIR", _DEFAULT_MODELS_DIR
+)
+TRANSCRIPTION_DEVICE = os.environ.get("WHATSAPP_TRANSCRIPTION_DEVICE", "cpu")
+TRANSCRIPTION_COMPUTE = os.environ.get("WHATSAPP_TRANSCRIPTION_COMPUTE", "int8")
+# Tope de duracion del audio (segundos) antes de abortar la transcripcion; 0 = sin limite.
+TRANSCRIPTION_MAX_SECONDS = _env_int("WHATSAPP_TRANSCRIPTION_MAX_SECONDS", 900)
+# 0 = derivar beam_size del tier del modelo (greedy en tiers chicos, beam 5 en el resto).
+TRANSCRIPTION_BEAM = _env_int("WHATSAPP_TRANSCRIPTION_BEAM", 0)

@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from mcp.server.fastmcp import FastMCP, Image
 from mcp.types import ToolAnnotations
 
-from whatsapp_mcp import bridge, db
+from whatsapp_mcp import bridge, db, transcription
 from whatsapp_mcp.models import Chat, Contact, MessageContext
 
 # Initialize FastMCP server
@@ -265,6 +265,41 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
             "success": False,
             "message": "Failed to download media"
         }
+
+# Mismo perfil que download_media: no muta estado de WhatsApp, pero descarga el media
+# a disco vía bridge (escribe archivos localmente) — anotarla readOnly sería mentir.
+@mcp.tool(annotations=_WRITE_IDEMPOTENT)
+def transcribe_audio_message(
+    message_id: str,
+    chat_jid: str,
+    language: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Transcribe a voice note / audio message to text using local speech-to-text
+    (faster-whisper). Everything runs on this machine — no external services.
+
+    Requires the optional `transcription` extra. The first use downloads the model
+    weights once (~75 MB for tiny up to ~1.6 GB for large-v3-turbo, depending on tier)
+    and caches them locally; later calls reuse them.
+
+    Args:
+        message_id: The ID of the message containing the audio
+        chat_jid: The JID of the chat containing the message
+        language: Optional ISO 639-1 language code (e.g. "es", "en"); autodetected if omitted
+        model: Optional Whisper model; must be one of tiny/base/small/large-v3-turbo
+            (any other value is rejected). Auto-selected from this machine's
+            hardware if omitted
+
+    Returns:
+        A dictionary with success status and, on success, the transcribed text,
+        detected language, durations, the model used (and why) and the local file path.
+    """
+    file_path = bridge.download_media(message_id, chat_jid)
+    if not file_path:
+        return {"success": False, "error": "Failed to download media for transcription"}
+    result = transcription.transcribe_file(file_path, language=language, model=model)
+    result["file_path"] = file_path
+    return result
 
 @mcp.tool(annotations=_READ_REMOTE)
 def list_groups() -> List[Dict[str, Any]]:
