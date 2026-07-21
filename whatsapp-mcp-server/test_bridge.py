@@ -269,7 +269,7 @@ class TestAcquireLoginQr:
             bridge_mod, "get_qr",
             lambda: {"qr_status": "active", "code": "c1", "png_base64": "cDE="},
         )
-        res = bridge_mod.acquire_login_qr(max_recycles=1, qr_wait_s=0.2)
+        res = bridge_mod.acquire_login_qr(max_recycles=1, qr_wait_s=0.2, recycle_wait_s=0)
         assert res["ok"] is True and res["logged_in"] is False, res
         assert res["qr"]["png_base64"] == "cDE=", "debio entregar el QR del bridge nuevo"
         assert apagados == [1], "el zombie debio reciclarse exactamente una vez"
@@ -314,7 +314,7 @@ class TestAcquireLoginQr:
             bridge_mod, "get_qr",
             lambda: next(qrs, {"qr_status": "active", "code": "c2", "png_base64": "cDI="}),
         )
-        res = bridge_mod.acquire_login_qr(max_recycles=1, qr_wait_s=0.2)
+        res = bridge_mod.acquire_login_qr(max_recycles=1, qr_wait_s=0.2, recycle_wait_s=0)
         assert res["ok"] is True and res["qr"]["code"] == "c2", res
         assert apagados == [1], "el canal agotado debio forzar exactamente un reciclaje"
 
@@ -334,7 +334,7 @@ class TestAcquireLoginQr:
             bridge_mod, "shutdown_bridge", lambda: apagados.append(1) or {"success": True}
         )
         monkeypatch.setattr(bridge_mod, "get_qr", lambda: {"qr_status": "timeout"})
-        res = bridge_mod.acquire_login_qr(max_recycles=0, qr_wait_s=0.2)
+        res = bridge_mod.acquire_login_qr(max_recycles=0, qr_wait_s=0.2, recycle_wait_s=0)
         assert res["ok"] is False, res
         assert "QR" in res["message"], f"mensaje no accionable: {res['message']}"
         assert apagados == [1], "max_recycles=0 permite exactamente un reciclaje final"

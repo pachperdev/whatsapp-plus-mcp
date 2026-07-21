@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"database/sql"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -120,6 +123,107 @@ func seedMessage(t *testing.T, s *MessageStore, id, chatJID, sender, content str
 		mediaType, filename, "", "", nil, nil, nil, 0); err != nil {
 		t.Fatalf("StoreMessage: %v", err)
 	}
+}
+
+// TestDeleteChat verifica la poda local tras un delete_chat: borra el chat, sus
+// mensajes y sus no-leídos de messages.db en una sola transacción, y solo elimina
+// el directorio de media descargada cuando deleteMedia=true. La media local es cara
+// de recuperar, así que borrarla es opt-in (igual que en el contrato del endpoint).
+func TestDeleteChat(t *testing.T) {
+	ts := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	// safeChat replica EXACTAMENTE la sanitización de DownloadMedia (wa.Service): el
+	// test siembra la media en el mismo path que DeleteChat intentará borrar.
+	safeChat := func(jid string) string {
+		return strings.NewReplacer(":", "_", "/", "_", "\\", "_").Replace(jid)
+	}
+
+	// seedChatWithMedia siembra chat + 2 mensajes + 1 no-leído y crea un archivo de
+	// media falso bajo <storeDir>/<safeChat>/. Devuelve el dir de media.
+	seedChatWithMedia := func(t *testing.T, s *MessageStore, jid string) string {
+		t.Helper()
+		if err := s.StoreChat(jid, "Chat", ts); err != nil {
+			t.Fatalf("StoreChat: %v", err)
+		}
+		if err := s.StoreMessage("a1", jid, jid, "hola", ts, false, "", "", "", "", nil, nil, nil, 0); err != nil {
+			t.Fatalf("StoreMessage a1: %v", err)
+		}
+		if err := s.StoreMessage("a2", jid, jid, "chau", ts.Add(time.Minute), false, "", "", "", "", nil, nil, nil, 0); err != nil {
+			t.Fatalf("StoreMessage a2: %v", err)
+		}
+		if err := s.AddUnread(jid, "a1", ts); err != nil {
+			t.Fatalf("AddUnread: %v", err)
+		}
+		mediaDir := filepath.Join(s.storeDir, safeChat(jid))
+		if err := os.MkdirAll(mediaDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll media: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(mediaDir, "algo.bin"), []byte{1, 2, 3}, 0o644); err != nil {
+			t.Fatalf("WriteFile media: %v", err)
+		}
+		return mediaDir
+	}
+
+	// rowsFor cuenta las filas de un chat en las tres tablas que DeleteChat poda.
+	rowsFor := func(t *testing.T, s *MessageStore, jid string) (chats, messages, unread int) {
+		t.Helper()
+		if err := s.db.QueryRow("SELECT COUNT(*) FROM chats WHERE jid = ?", jid).Scan(&chats); err != nil {
+			t.Fatalf("count chats: %v", err)
+		}
+		if err := s.db.QueryRow("SELECT COUNT(*) FROM messages WHERE chat_jid = ?", jid).Scan(&messages); err != nil {
+			t.Fatalf("count messages: %v", err)
+		}
+		if err := s.db.QueryRow("SELECT COUNT(*) FROM unread_messages WHERE chat_jid = ?", jid).Scan(&unread); err != nil {
+			t.Fatalf("count unread: %v", err)
+		}
+		return chats, messages, unread
+	}
+
+	t.Run("deleteMedia=false poda la DB pero conserva la media local", func(t *testing.T) {
+		s := newTestStore(t)
+		jid := "111@s.whatsapp.net"
+		mediaDir := seedChatWithMedia(t, s, jid)
+
+		n, err := s.DeleteChat(jid, false)
+		if err != nil {
+			t.Fatalf("DeleteChat: %v", err)
+		}
+		if n != 2 {
+			t.Errorf("mensajes borrados: got %d, want 2", n)
+		}
+		if c, m, u := rowsFor(t, s, jid); c != 0 || m != 0 || u != 0 {
+			t.Errorf("filas tras poda: chats=%d messages=%d unread=%d, want 0/0/0", c, m, u)
+		}
+		if _, err := os.Stat(mediaDir); err != nil {
+			t.Errorf("con deleteMedia=false el dir de media debe seguir existiendo: %v", err)
+		}
+	})
+
+	t.Run("deleteMedia=true elimina tambien el dir de media", func(t *testing.T) {
+		s := newTestStore(t)
+		jid := "222@s.whatsapp.net"
+		mediaDir := seedChatWithMedia(t, s, jid)
+
+		if _, err := s.DeleteChat(jid, true); err != nil {
+			t.Fatalf("DeleteChat: %v", err)
+		}
+		if c, m, u := rowsFor(t, s, jid); c != 0 || m != 0 || u != 0 {
+			t.Errorf("filas tras poda: chats=%d messages=%d unread=%d, want 0/0/0", c, m, u)
+		}
+		if _, err := os.Stat(mediaDir); !os.IsNotExist(err) {
+			t.Errorf("con deleteMedia=true el dir de media debe eliminarse, stat err=%v", err)
+		}
+	})
+
+	t.Run("chat inexistente devuelve 0 filas sin error", func(t *testing.T) {
+		s := newTestStore(t)
+		n, err := s.DeleteChat("noexiste@s.whatsapp.net", true)
+		if err != nil {
+			t.Fatalf("no debería fallar: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("filas borradas: got %d, want 0", n)
+		}
+	})
 }
 
 // TestMarkMessageRevoked verifica el invariante del revoke: el contenido cambia
@@ -346,5 +450,55 @@ func TestPollSender(t *testing.T) {
 	// Chat correcto pero id inexistente: tampoco matchea.
 	if _, _, err := s.PollSender("otro-id", "bbb@s.whatsapp.net"); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("id inexistente: got %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestMediaDirForChat(t *testing.T) {
+	base := filepath.Join(string(os.PathSeparator)+"var", "store")
+	tests := []struct {
+		name   string
+		jid    string
+		wantOK bool
+	}{
+		{"jid directo válido", "111@s.whatsapp.net", true},
+		{"jid de grupo válido", "120363@g.us", true},
+		{"device id con ':' se sanitiza a un nombre dentro del store", "111:2@s.whatsapp.net", true},
+		{"vacío resolvería al store mismo", "", false},
+		{"'.' resuelve al store mismo", ".", false},
+		{"'..' escapa al directorio padre", "..", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := mediaDirForChat(base, tc.jid)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v (dir=%q)", ok, tc.wantOK, got)
+			}
+			if ok && !strings.HasPrefix(got, filepath.Clean(base)+string(os.PathSeparator)) {
+				t.Errorf("dir %q no quedó estrictamente dentro de %q", got, base)
+			}
+		})
+	}
+}
+
+// TestDeleteChatMediaGuard blinda la regresión del path-traversal: un chat_jid vacío o
+// con ".." NO debe hacer que os.RemoveAll borre el store (sesión/token/DBs) ni su
+// directorio padre. La guarda debe rechazarlos con error dejando el store intacto.
+func TestDeleteChatMediaGuard(t *testing.T) {
+	s := newTestStore(t)
+	// Centinela dentro del store (simula whatsapp.db): NO debe desaparecer.
+	sentinel := filepath.Join(s.storeDir, "whatsapp.db")
+	if err := os.WriteFile(sentinel, []byte("sesión"), 0o600); err != nil {
+		t.Fatalf("no pude crear el centinela: %v", err)
+	}
+	for _, jid := range []string{"", "..", "."} {
+		if _, err := s.DeleteChat(jid, true); err == nil {
+			t.Errorf("DeleteChat(%q, deleteMedia=true) debería devolver error de guarda, no nil", jid)
+		}
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("el centinela del store fue borrado por una guarda fallida: %v", err)
+	}
+	if _, err := os.Stat(s.storeDir); err != nil {
+		t.Fatalf("el store entero fue borrado: %v", err)
 	}
 }
