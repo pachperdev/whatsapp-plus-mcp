@@ -890,7 +890,9 @@ def ensure_bridge(timeout_s: float = 20.0) -> Dict[str, Any]:
     }
 
 
-def acquire_login_qr(max_recycles: int = 2, qr_wait_s: float = 15.0) -> Dict[str, Any]:
+def acquire_login_qr(
+    max_recycles: int = 2, qr_wait_s: float = 15.0, recycle_wait_s: float = 2.0
+) -> Dict[str, Any]:
     """Consigue un QR de login vigente, validando/reciclando la sesion segun haga falta.
 
     Maquina de estados sobre /api/status y /api/qr:
@@ -900,6 +902,11 @@ def acquire_login_qr(max_recycles: int = 2, qr_wait_s: float = 15.0) -> Dict[str
         borra la sesion rota en ese ciclo y el respawn siguiente entra en modo QR.
       - !logged_in              -> modo QR: esperar el primer codigo y devolverlo; si el
         canal se agoto ("timeout"), reciclar para obtener un canal fresco.
+
+    `recycle_wait_s` es la pausa tras cada shutdown de reciclaje (default 2.0s en
+    produccion, para dar tiempo a que el proceso viejo libere el puerto antes del
+    respawn). Se expone como parametro para que los tests lo pongan en 0 y no paguen
+    la espera real (~2s por reciclaje); el default preserva el comportamiento de prod.
     """
     import time as _time
 
@@ -939,7 +946,7 @@ def acquire_login_qr(max_recycles: int = 2, qr_wait_s: float = 15.0) -> Dict[str
                 _time.sleep(0.5)
 
         shutdown_bridge()
-        _time.sleep(2.0)
+        _time.sleep(recycle_wait_s)
         ensured = ensure_bridge()
         if not ensured["ok"]:
             return {"ok": False, "message": ensured.get("message", "bridge unavailable")}
