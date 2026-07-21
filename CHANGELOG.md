@@ -18,9 +18,20 @@ Forked from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).
   whatsmeow bump above). Optional `delete_media` also removes the chat's downloaded media
   under `store/<chat>/`. Same 3-piece pattern as the other chat-state tools; being an
   app-state mutation it may transiently return the `409 LTHash` recovery and need a retry.
+  After a successful app-state delete the bridge also **prunes the local DB**
+  (`MessageStore.DeleteChat`): the chat's `messages`, `unread_messages` and `chats` rows are
+  removed in one transaction so local reads (`list_chats` / `list_messages`) stop showing it
+  (best-effort — a failed prune logs a warning but never fails the authoritative remote delete).
 
 ### Security
 
+- **`delete_chat` media removal hardened against path traversal** (`MessageStore.DeleteChat`):
+  the new local-prune's `os.RemoveAll` could escape the store — `types.ParseJID` accepts any
+  string without `@` unvalidated and the sanitizer left `.`/`..`/empty untouched, so
+  `chat_jid=""` resolved to the store dir itself (wiping session + DBs + token) and `".."` to
+  its parent (`$HOME` in plugin mode). Now `mediaDirForChat` requires the resolved path to stay
+  strictly inside the store (`filepath.Clean` + separator-prefix check); anything else is
+  refused and the `RemoveAll` is skipped. Caught by the risk review before release.
 - **Token regeneration no longer trusts `chmod`** (`GetOrCreateBridgeToken`):
   regenerating over a pre-existing lax-permission `.bridge_token` (e.g. `0644`
   left by a crash) used to keep the live token world-readable — `os.WriteFile`
@@ -72,6 +83,11 @@ Forked from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).
 
 ### Internal / quality
 
+- **Test-quality follow-ups**: the revoke-scenario boilerplate shared between
+  `dispatcher_test.go` and `events_test.go` extracted to a single helper
+  (`internal/wa/helpers_test.go`); `acquire_login_qr`'s fixed recycle `sleep(2.0)` made
+  injectable (`recycle_wait_s`, default unchanged) so the 3 recycle tests no longer pay ~2s
+  each (`test_bridge.py` 8.2s → 1.6s). `.codegraph/` (local CodeGraph index) gitignored.
 - **Test campaign (+122 cases)**: bridge coverage 20.4% → 29.7% (media/edit
   protobuf parsing, store revoke/edit invariants, bridge token, group invites,
   quoted context, event dispatcher, `sendAppState` LTHash recovery 0 → 100%);
