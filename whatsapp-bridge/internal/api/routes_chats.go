@@ -5,6 +5,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -109,6 +110,14 @@ func registerChatRoutes(mux *http.ServeMux, svc *wa.Service, client *whatsmeow.C
 		if err := sendAppState(client, appstate.BuildDeleteChat(jid, ts, key, req.DeleteMedia)); err != nil {
 			respondErr(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		// El borrado app-state es la acción autoritativa; ya ocurrió. Ahora podamos la
+		// DB local: list_chats/list_messages leen messages.db directamente, así que sin
+		// esta poda el chat "borrado" seguiría apareciendo. Una poda local fallida NO
+		// debe fallar la operación (el borrado remoto ya se hizo), así que solo se
+		// loguea un warning y se responde OK igual: el contrato del endpoint no cambia.
+		if _, err := st.DeleteChat(jid.String(), req.DeleteMedia); err != nil {
+			fmt.Printf("warn: delete_chat: borrado app-state ok pero poda local fallo: %v\n", err)
 		}
 		respondOK(w, map[string]interface{}{"message": "chat deleted"})
 	}))

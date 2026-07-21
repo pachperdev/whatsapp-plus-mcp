@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	// Registra el driver "sqlite" (modernc, sin CGO) para sql.Open.
@@ -32,6 +33,10 @@ type Message struct {
 // MessageStore is the SQLite-backed handler for storing message history.
 type MessageStore struct {
 	db *sql.DB
+	// storeDir es el directorio raíz del store (donde vive messages.db y, bajo
+	// subdirectorios <safeChat>/, la media descargada). Se guarda para poder podar
+	// esa media al borrar un chat (DeleteChat), replicando la ruta que arma DownloadMedia.
+	storeDir string
 }
 
 // DB expone el handle SQLite para consultas ad-hoc que aún no tienen un método
@@ -114,7 +119,7 @@ func NewMessageStore(storeDir string) (*MessageStore, error) {
 	// usa solo GetDirectPath, y reconstruirlo de la URL falla con el formato nuevo (mms3) -> 403.
 	_, _ = db.Exec("ALTER TABLE messages ADD COLUMN direct_path TEXT")
 
-	return &MessageStore{db: db}, nil
+	return &MessageStore{db: db, storeDir: storeDir}, nil
 }
 
 // Close the database connection
@@ -201,6 +206,51 @@ func (store *MessageStore) MarkMessageRevoked(id, chatJID string) (int64, error)
 	}
 	n, _ := res.RowsAffected()
 	return n, nil
+}
+
+// DeleteChat poda localmente un chat tras un borrado app-state exitoso: en UNA sola
+// transacción elimina sus mensajes, sus no-leídos y la fila del chat, de modo que
+// list_chats/list_messages (que leen messages.db directamente) dejen de mostrarlo.
+// Devuelve cuántos MENSAJES se borraron (0 si el chat no existía; sin error): es el
+// dato útil para el caller (cuánto historial local se perdió). Solo si deleteMedia
+// borra además el directorio de media descargada en <storeDir>/<safeChat>/,
+// replicando la sanitización de DownloadMedia (wa.Service) para apuntar al mismo dir.
+// os.RemoveAll ya trata "no existe" como éxito; un RemoveAll fallido SÍ se propaga,
+// pero la DB ya quedó comiteada: la poda de filas es la parte autoritativa local.
+func (store *MessageStore) DeleteChat(chatJID string, deleteMedia bool) (int64, error) {
+	tx, err := store.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	// Rollback defensivo: si algo falla antes del Commit, deshace todo; tras un Commit
+	// exitoso el Rollback es un no-op (devuelve ErrTxDone, que ignoramos).
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.Exec("DELETE FROM messages WHERE chat_jid = ?", chatJID)
+	if err != nil {
+		return 0, err
+	}
+	deleted, _ := res.RowsAffected()
+
+	if _, err := tx.Exec("DELETE FROM unread_messages WHERE chat_jid = ?", chatJID); err != nil {
+		return 0, err
+	}
+	// El chat se borra al final: como messages tiene FK a chats(jid), borrar primero
+	// los mensajes evita cualquier problema de orden con foreign_keys=on.
+	if _, err := tx.Exec("DELETE FROM chats WHERE jid = ?", chatJID); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+
+	if deleteMedia {
+		safeChat := strings.NewReplacer(":", "_", "/", "_", "\\", "_").Replace(chatJID)
+		if err := os.RemoveAll(filepath.Join(store.storeDir, safeChat)); err != nil {
+			return deleted, err
+		}
+	}
+	return deleted, nil
 }
 
 // ApplyMessageEdit refleja un edit entrante: reemplaza el contenido por el texto
