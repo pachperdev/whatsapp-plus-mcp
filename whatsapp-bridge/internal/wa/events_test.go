@@ -4,11 +4,8 @@ import (
 	"testing"
 	"time"
 
-	waCommon "go.mau.fi/whatsmeow/proto/waCommon"
-	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
-	"google.golang.org/protobuf/proto"
 )
 
 // TestHandleMessageRevoke cubre SOLO el camino revoke de HandleMessage: un
@@ -20,41 +17,24 @@ func TestHandleMessageRevoke(t *testing.T) {
 	chat := types.JID{User: "5215551234567", Server: types.DefaultUserServer}
 	sender := types.JID{User: "5215551234567", Server: types.DefaultUserServer}
 
-	newRevokeEvent := func(targetID string) *events.Message {
-		pm := &waE2E.ProtocolMessage{Type: waE2E.ProtocolMessage_REVOKE.Enum()}
-		if targetID != "" {
-			pm.Key = &waCommon.MessageKey{ID: proto.String(targetID)}
-		}
-		return &events.Message{
-			Info: types.MessageInfo{
-				MessageSource: types.MessageSource{Chat: chat, Sender: sender},
-				ID:            "revoke-evt-1",
-				Timestamp:     ts.Add(time.Minute),
-			},
-			Message: &waE2E.Message{ProtocolMessage: pm},
-		}
+	// revokeEvent arma el REVOKE compartido fijando chat/sender/timestamp de este test;
+	// solo varía el targetID por subtest (el shape vive en newRevokeEvent, ver helpers_test.go).
+	revokeEvent := func(targetID string) *events.Message {
+		return newRevokeEvent(chat, sender, targetID, ts.Add(time.Minute))
 	}
 
 	t.Run("persiste el mensaje como eliminado sin tocar el timestamp", func(t *testing.T) {
 		s := newTestService(t)
 		mustStoreMsg(t, s, "orig", chat.String(), sender.User, "texto original", ts, false, "", "")
 
-		s.HandleMessage(newRevokeEvent("orig"))
+		s.HandleMessage(revokeEvent("orig"))
 
-		msgs, err := s.Store.GetMessages(chat.String(), 10)
-		if err != nil {
-			t.Fatalf("GetMessages: %v", err)
-		}
-		if len(msgs) != 1 {
-			// El evento de revoke NO debe insertarse como mensaje propio (early return).
-			t.Fatalf("esperaba 1 mensaje (el original marcado), got %d", len(msgs))
-		}
-		if got := msgs[0].Content; got != "🗑️ Mensaje eliminado" {
-			t.Errorf("content: got %q, want %q", got, "🗑️ Mensaje eliminado")
-		}
+		// El evento de revoke NO debe insertarse como mensaje propio (early return):
+		// el chat queda con 1 solo mensaje, el original marcado como eliminado.
+		msg := assertRevokeTombstone(t, s, chat)
 		// Invariante: el revoke se refleja in-place SIN reordenar el historial.
-		if !msgs[0].Time.Equal(ts) {
-			t.Errorf("timestamp: got %v, want %v (no debe cambiar)", msgs[0].Time, ts)
+		if !msg.Time.Equal(ts) {
+			t.Errorf("timestamp: got %v, want %v (no debe cambiar)", msg.Time, ts)
 		}
 	})
 
@@ -63,7 +43,7 @@ func TestHandleMessageRevoke(t *testing.T) {
 		s := newTestService(t)
 		mustStoreMsg(t, s, "orig", chat.String(), sender.User, "texto original", ts, false, "", "")
 
-		s.HandleMessage(newRevokeEvent(""))
+		s.HandleMessage(revokeEvent(""))
 
 		msgs, err := s.Store.GetMessages(chat.String(), 10)
 		if err != nil {
@@ -82,7 +62,7 @@ func TestHandleMessageRevoke(t *testing.T) {
 			t.Fatalf("TouchChat: %v", err)
 		}
 
-		s.HandleMessage(newRevokeEvent("desconocido"))
+		s.HandleMessage(revokeEvent("desconocido"))
 
 		msgs, err := s.Store.GetMessages(chat.String(), 10)
 		if err != nil {

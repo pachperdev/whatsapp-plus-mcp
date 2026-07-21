@@ -4,11 +4,8 @@ import (
 	"testing"
 	"time"
 
-	waCommon "go.mau.fi/whatsmeow/proto/waCommon"
-	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
-	"google.golang.org/protobuf/proto"
 )
 
 // TestHandleEventReceiptReadSelf cubre el caso Receipt del dispatcher: un read-receipt
@@ -115,27 +112,9 @@ func TestHandleEventMessageRevoke(t *testing.T) {
 	s := newTestService(t)
 	mustStoreMsg(t, s, "orig", chat.String(), sender.User, "texto original", ts, false, "", "")
 
-	pm := &waE2E.ProtocolMessage{
-		Type: waE2E.ProtocolMessage_REVOKE.Enum(),
-		Key:  &waCommon.MessageKey{ID: proto.String("orig")},
-	}
-	s.HandleEvent(&events.Message{
-		Info: types.MessageInfo{
-			MessageSource: types.MessageSource{Chat: chat, Sender: sender},
-			ID:            "revoke-evt-1",
-			Timestamp:     ts.Add(time.Minute),
-		},
-		Message: &waE2E.Message{ProtocolMessage: pm},
-	})
+	// Entra por HandleEvent (no directo a HandleMessage): verifica que el dispatch
+	// delega en HandleMessage. El shape del evento y el tombstone son compartidos.
+	s.HandleEvent(newRevokeEvent(chat, sender, "orig", ts.Add(time.Minute)))
 
-	msgs, err := s.Store.GetMessages(chat.String(), 10)
-	if err != nil {
-		t.Fatalf("GetMessages: %v", err)
-	}
-	if len(msgs) != 1 {
-		t.Fatalf("esperaba 1 mensaje (el original marcado), got %d", len(msgs))
-	}
-	if got := msgs[0].Content; got != "🗑️ Mensaje eliminado" {
-		t.Errorf("content: got %q, want %q", got, "🗑️ Mensaje eliminado")
-	}
+	assertRevokeTombstone(t, s, chat)
 }
