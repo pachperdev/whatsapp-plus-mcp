@@ -601,3 +601,145 @@ func TestMediaFilename(t *testing.T) {
 		}
 	})
 }
+
+// TestSanitizedID8 cubre el helper de saneo compartido entre mediaFilename y
+// filenameHasMessageSuffix: primeros 8 caracteres [A-Za-z0-9] del message ID,
+// con fallback a hash corto determinista cuando el saneo deja el sufijo vacío.
+func TestSanitizedID8(t *testing.T) {
+	cases := []struct {
+		name  string
+		msgID string
+		want  string
+	}{
+		{"ID alfanumérico largo se trunca a 8", "ACBF57869E3B4C1FA3991768F703BAE9", "ACBF5786"},
+		{"caracteres raros se filtran a [A-Za-z0-9]", "a/b:c*d!e?f..g", "abcdefg"},
+		{"ID corto se conserva completo", "abc", "abc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizedID8(tc.msgID); got != tc.want {
+				t.Errorf("sanitizedID8(%q): got %q, want %q", tc.msgID, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("ID sin caracteres válidos cae a hash corto determinista", func(t *testing.T) {
+		got := sanitizedID8("///***")
+		if got == "" || !isAlnum(got) {
+			t.Fatalf("el fallback debería ser alfanumérico no vacío, got %q", got)
+		}
+		if got != sanitizedID8("///***") {
+			t.Errorf("el fallback debería ser determinista: %q", got)
+		}
+		if other := sanitizedID8("???!!!"); other == got {
+			t.Errorf("IDs inválidos distintos no deberían compartir fallback: %q", got)
+		}
+	})
+
+	t.Run("mediaFilename usa exactamente este sufijo", func(t *testing.T) {
+		// Garantiza que el refactor no divergió: el helper compartido y el
+		// generador de nombres producen el mismo id8 para cualquier ID.
+		ts := time.Date(2026, 7, 20, 22, 53, 20, 0, time.UTC)
+		for _, id := range []string{"ACBF57869E3B4C1FA3991768F703BAE9", "abc", "a/b:c*d!e?f..g", "///***"} {
+			want := "audio_20260720_225320_" + sanitizedID8(id) + ".ogg"
+			if got := mediaFilename("audio", ".ogg", ts, id); got != want {
+				t.Errorf("mediaFilename(%q): got %q, want %q", id, got, want)
+			}
+		}
+	})
+}
+
+// TestFilenameHasMessageSuffix cubre la detección del vínculo unívoco archivo↔mensaje:
+// un filename generado por mediaFilename lleva el sufijo _<id8> derivado del propio
+// message ID, lo que hace imposible la colisión con otro mensaje y permite a
+// DownloadMedia saltar la verificación sha256 (costosa en archivos grandes) al reusar.
+// Los filenames legacy (sin sufijo) y los provistos por el remitente deben dar false
+// para conservar la verificación completa.
+func TestFilenameHasMessageSuffix(t *testing.T) {
+	const msgID = "ACBF57869E3B4C1FA3991768F703BAE9"
+
+	cases := []struct {
+		name     string
+		filename string
+		msgID    string
+		want     bool
+	}{
+		{"filename generado para ese mensaje", "audio_20260720_225320_ACBF5786.ogg", msgID, true},
+		{"legacy sin sufijo", "audio_20260720_225320.ogg", msgID, false},
+		{"sufijo de OTRO mensaje", "audio_20260720_225320_ACBE2BC6.ogg", msgID, false},
+		{"filename provisto por el remitente", "informe.pdf", msgID, false},
+		{"filename del remitente con guiones bajos", "informe_final_v2.pdf", msgID, false},
+		{"filename vacío", "", msgID, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := filenameHasMessageSuffix(tc.filename, tc.msgID); got != tc.want {
+				t.Errorf("filenameHasMessageSuffix(%q, %q): got %v, want %v", tc.filename, tc.msgID, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("propiedad: reconoce todo filename que mediaFilename genera", func(t *testing.T) {
+		ts := time.Date(2026, 7, 20, 22, 53, 20, 0, time.UTC)
+		inputs := []struct {
+			mediaType string
+			ext       string
+			msgID     string
+		}{
+			{"image", ".jpg", "ACBF57869E3B4C1FA3991768F703BAE9"},
+			{"video", ".mp4", "3EB0F5D2A1B4C6E8"},
+			{"audio", ".ogg", "abc"},               // ID más corto que 8 caracteres
+			{"sticker", ".webp", "a/b:c*d!e?f..g"}, // ID que requiere saneo
+			{"document", "", "ABCD1234WXYZ"},       // fallback de documento sin extensión
+			{"video", ".mp4", "///***"},            // saneo vacío -> hash corto
+		}
+		for _, in := range inputs {
+			fn := mediaFilename(in.mediaType, in.ext, ts, in.msgID)
+			if !filenameHasMessageSuffix(fn, in.msgID) {
+				t.Errorf("filenameHasMessageSuffix(%q, %q) = false; debería reconocer su propio filename", fn, in.msgID)
+			}
+			// Y el mismo filename NO debe vincularse a un message ID distinto.
+			if filenameHasMessageSuffix(fn, "ZZZZ99999999") {
+				t.Errorf("filenameHasMessageSuffix(%q) no debería matchear otro message ID", fn)
+			}
+		}
+	})
+}
+
+// TestShouldSkipSHA cubre la decisión de saltar la verificación sha256 al reusar
+// media cacheada. El salto solo es seguro para tipos cuyo filename SIEMPRE lo genera
+// el bridge (audio/image/video/sticker) — el remitente no lo controla. Escenario de
+// ataque cubierto: los documentos conservan el nombre provisto por el REMITENTE
+// (ExtractMediaInfo usa doc.GetFileName()), que puede terminar en _<id8> coincidente
+// con el sanitizedID8 de su propio message ID; con solo el chequeo de tamaño se
+// reusarían bytes cacheados de OTRO mensaje. Los documentos validan sha256 SIEMPRE,
+// aunque el sufijo matchee; los tipos desconocidos también (fail-safe).
+func TestShouldSkipSHA(t *testing.T) {
+	const msgID = "ACBF57869E3B4C1FA3991768F703BAE9" // sanitizedID8 -> "ACBF5786"
+
+	cases := []struct {
+		name      string
+		mediaType string
+		filename  string
+		want      bool
+	}{
+		{"audio generado por el bridge con sufijo propio", "audio", "audio_20260720_225320_ACBF5786.ogg", true},
+		{"imagen generada por el bridge con sufijo propio", "image", "image_20260720_225320_ACBF5786.jpg", true},
+		{"video generado por el bridge con sufijo propio", "video", "video_20260720_225320_ACBF5786.mp4", true},
+		{"sticker generado por el bridge con sufijo propio", "sticker", "sticker_20260720_225320_ACBF5786.webp", true},
+		{"ATAQUE: documento del remitente imitando el sufijo _<id8> propio", "document", "informe_ACBF5786.pdf", false},
+		{"documento imitando el patrón generado completo también valida", "document", "document_20260720_225320_ACBF5786", false},
+		{"documento con nombre normal del remitente", "document", "informe.pdf", false},
+		{"audio legacy sin sufijo", "audio", "audio_20260720_225320.ogg", false},
+		{"audio con sufijo de OTRO mensaje", "audio", "audio_20260720_225320_ACBE2BC6.ogg", false},
+		{"tipo desconocido valida completo (fail-safe)", "poll", "algo_ACBF5786", false},
+		{"tipo vacío valida completo (fail-safe)", "", "audio_20260720_225320_ACBF5786.ogg", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldSkipSHA(tc.mediaType, tc.filename, msgID); got != tc.want {
+				t.Errorf("shouldSkipSHA(%q, %q, %q): got %v, want %v", tc.mediaType, tc.filename, msgID, got, tc.want)
+			}
+		})
+	}
+}
