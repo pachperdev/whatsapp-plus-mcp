@@ -83,6 +83,18 @@ Forked from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).
 
 ### Fixed
 
+- **Media filename collisions no longer serve the wrong bytes** (`internal/wa`): captured
+  media filenames were generated from the capture timestamp at second granularity
+  (`audio_YYYYMMDD_HHMMSS.ogg`), so history-sync bursts stored different messages under the
+  **same** `filename` — and `DownloadMedia` blindly reused any existing file in
+  `store/<chat>/`, returning the bytes of the *wrong* message (a voice note's transcription
+  came back with another note's text). Fixed in two layers: (1) generated filenames now
+  carry a unique suffix derived from the message ID (`mediaFilename`:
+  `audio_YYYYMMDD_HHMMSS_<id8>.ogg`, sanitized to `[A-Za-z0-9]` with a short-hash fallback);
+  (2) before reusing an existing file, `DownloadMedia` validates it against the requested
+  message's persisted metadata (`canReuseMediaFile`: size vs `file_length`, then sha256 vs
+  `file_sha256`; mismatch → logged and re-downloaded, no metadata → reused as before), so
+  even pre-existing colliding rows now return the correct media.
 - **Dead `"Error parsing response"` branch restored** (`bridge.py`): since
   requests ≥ 2.27, `response.json()` raises `requests.exceptions.JSONDecodeError`,
   which inherits from `RequestException` — the earlier `except` swallowed invalid

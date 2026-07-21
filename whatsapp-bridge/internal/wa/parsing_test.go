@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"google.golang.org/protobuf/proto"
@@ -224,7 +225,8 @@ func TestExtractEditedText(t *testing.T) {
 // TestExtractMediaInfo cubre el parsing de media descargable: cada tipo debe
 // propagar url/direct_path/claves/hashes (el direct_path es el dato CRÍTICO:
 // whatsmeow.Download solo usa GetDirectPath y sin él la descarga mms3 da 403).
-// Los filenames llevan timestamp de time.Now(), por eso se chequean por prefijo/sufijo.
+// Los filenames llevan timestamp de time.Now(), por eso se chequean por prefijo/sufijo;
+// los generados además deben incluir el sufijo derivado del message ID (anti-colisión).
 func TestExtractMediaInfo(t *testing.T) {
 	// Metadata compartida por todos los casos de media real.
 	const (
@@ -324,12 +326,17 @@ func TestExtractMediaInfo(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			gotType, gotFilename, gotURL, gotDirectPath, gotKey, gotSHA, gotEncSHA, gotLen := ExtractMediaInfo(tc.msg)
+			gotType, gotFilename, gotURL, gotDirectPath, gotKey, gotSHA, gotEncSHA, gotLen := ExtractMediaInfo(tc.msg, "MSGID123")
 			if gotType != tc.wantType {
 				t.Errorf("mediaType: got %q, want %q", gotType, tc.wantType)
 			}
 			if !strings.HasPrefix(gotFilename, tc.wantPrefix) || !strings.HasSuffix(gotFilename, tc.wantSuffix) {
 				t.Errorf("filename: got %q, want prefijo %q y sufijo %q", gotFilename, tc.wantPrefix, tc.wantSuffix)
+			}
+			// Los filenames GENERADOS (prefijo tipo "audio_") deben incluir el sufijo del
+			// message ID; los provistos por el remitente (p. ej. "informe.pdf") no.
+			if strings.HasSuffix(tc.wantPrefix, "_") && !strings.Contains(gotFilename, "MSGID123") {
+				t.Errorf("filename generado debería incluir el sufijo del message ID: %q", gotFilename)
 			}
 			if tc.hasMedia {
 				if gotURL != wantURL {
@@ -365,7 +372,7 @@ func TestExtractMediaInfoPoll(t *testing.T) {
 			{OptionName: proto.String("Sushi")},
 		},
 	}}
-	mediaType, filename, url, directPath, mediaKey, _, _, fileLength := ExtractMediaInfo(msg)
+	mediaType, filename, url, directPath, mediaKey, _, _, fileLength := ExtractMediaInfo(msg, "MSGID123")
 	if mediaType != "poll" {
 		t.Errorf("mediaType: got %q, want %q", mediaType, "poll")
 	}
@@ -389,7 +396,7 @@ func TestExtractMediaInfoGroupInvite(t *testing.T) {
 		InviteExpiration: proto.Int64(1751371200),
 		GroupName:        proto.String("Mi Grupo"),
 	}}
-	mediaType, filename, url, directPath, mediaKey, _, _, fileLength := ExtractMediaInfo(msg)
+	mediaType, filename, url, directPath, mediaKey, _, _, fileLength := ExtractMediaInfo(msg, "MSGID123")
 	if mediaType != "group_invite" {
 		t.Fatalf("mediaType: got %q, want %q", mediaType, "group_invite")
 	}
@@ -499,4 +506,98 @@ func TestExtractDirectPathFromURL(t *testing.T) {
 	if got := ExtractDirectPathFromURL("no-url"); got != "no-url" {
 		t.Errorf("fallback got %q", got)
 	}
+}
+
+// isAlnum reporta si el string contiene SOLO caracteres [A-Za-z0-9] (y no está vacío).
+func isAlnum(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		alnum := ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z') || ('0' <= r && r <= '9')
+		if !alnum {
+			return false
+		}
+	}
+	return true
+}
+
+// TestMediaFilename cubre la generación de nombres de media capturada. Historia de bug:
+// el nombre usaba solo el timestamp de captura a granularidad de segundo, y en ráfagas
+// de history sync dos mensajes distintos capturados en el mismo segundo colisionaban
+// (mismo filename para bytes distintos). El sufijo derivado del message ID lo evita.
+func TestMediaFilename(t *testing.T) {
+	ts := time.Date(2026, 7, 20, 22, 53, 20, 0, time.UTC)
+
+	t.Run("mismo timestamp y distinto ID producen nombres distintos", func(t *testing.T) {
+		// IDs reales del bug: ambos capturados en el mismo segundo compartían filename.
+		a := mediaFilename("audio", ".ogg", ts, "ACBF57869E3B4C1FA3991768F703BAE9")
+		b := mediaFilename("audio", ".ogg", ts, "ACBE2BC664B92349E499FAEB54C53630")
+		if a == b {
+			t.Errorf("dos mensajes distintos no deberían compartir filename: %q", a)
+		}
+	})
+
+	t.Run("determinista para el mismo mensaje", func(t *testing.T) {
+		a := mediaFilename("audio", ".ogg", ts, "ACBF57869E3B4C1FA3991768F703BAE9")
+		b := mediaFilename("audio", ".ogg", ts, "ACBF57869E3B4C1FA3991768F703BAE9")
+		if a != b {
+			t.Errorf("mismo mensaje debería dar el mismo nombre: %q vs %q", a, b)
+		}
+	})
+
+	t.Run("prefijo, timestamp y extensión preservados", func(t *testing.T) {
+		got := mediaFilename("audio", ".ogg", ts, "ACBF57869E3B4C1FA3991768F703BAE9")
+		want := "audio_20260720_225320_ACBF5786.ogg"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("sin extensión (fallback de documento)", func(t *testing.T) {
+		got := mediaFilename("document", "", ts, "ABCD1234WXYZ")
+		want := "document_20260720_225320_ABCD1234"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("caracteres raros del ID se sanean a [A-Za-z0-9]", func(t *testing.T) {
+		got := mediaFilename("image", ".jpg", ts, "a/b:c*d!e?f..g")
+		want := "image_20260720_225320_abcdefg.jpg"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("ID sin caracteres válidos cae a hash corto determinista", func(t *testing.T) {
+		const prefix = "video_20260720_225320_"
+		got := mediaFilename("video", ".mp4", ts, "///***")
+		if got != mediaFilename("video", ".mp4", ts, "///***") {
+			t.Errorf("el fallback debería ser determinista: %q", got)
+		}
+		if !strings.HasPrefix(got, prefix) || !strings.HasSuffix(got, ".mp4") {
+			t.Fatalf("prefijo/extensión no preservados: %q", got)
+		}
+		suffix := strings.TrimSuffix(strings.TrimPrefix(got, prefix), ".mp4")
+		if !isAlnum(suffix) {
+			t.Errorf("el sufijo de fallback debería ser alfanumérico no vacío, got %q", suffix)
+		}
+		// IDs inválidos DISTINTOS siguen produciendo nombres distintos (hash del ID original).
+		if other := mediaFilename("video", ".mp4", ts, "???!!!"); other == got {
+			t.Errorf("IDs distintos no deberían compartir fallback: %q", got)
+		}
+	})
+
+	t.Run("ID vacío también obtiene sufijo alfanumérico", func(t *testing.T) {
+		const prefix = "audio_20260720_225320_"
+		got := mediaFilename("audio", ".ogg", ts, "")
+		if !strings.HasPrefix(got, prefix) || !strings.HasSuffix(got, ".ogg") {
+			t.Fatalf("prefijo/extensión no preservados: %q", got)
+		}
+		suffix := strings.TrimSuffix(strings.TrimPrefix(got, prefix), ".ogg")
+		if !isAlnum(suffix) {
+			t.Errorf("el sufijo debería ser alfanumérico no vacío, got %q", suffix)
+		}
+	})
 }

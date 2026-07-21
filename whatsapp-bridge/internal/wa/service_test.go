@@ -1,6 +1,9 @@
 package wa
 
 import (
+	"crypto/sha256"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -305,4 +308,43 @@ func TestLastMsgKey(t *testing.T) {
 			t.Errorf("timestamp: got %v, want %v", gotTS, ts.Add(time.Hour))
 		}
 	})
+}
+
+// TestCanReuseMediaFile cubre la validación previa al reuso de media ya descargada.
+// Historia de bug: dos mensajes distintos compartían filename (colisión por timestamp
+// de captura en history sync) y DownloadMedia reusaba el archivo a ciegas, devolviendo
+// los bytes del mensaje EQUIVOCADO. El archivo solo puede reusarse si coincide con la
+// metadata (file_length/file_sha256) de la fila del mensaje pedido.
+func TestCanReuseMediaFile(t *testing.T) {
+	dir := t.TempDir()
+	data := []byte("bytes de la nota de voz correcta")
+	path := filepath.Join(dir, "audio_20260720_225320_ACBF5786.ogg")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	sha := sha256.Sum256(data)
+	otherSHA := sha256.Sum256([]byte("bytes de OTRO mensaje"))
+
+	tests := []struct {
+		name        string
+		path        string
+		expectedLen uint64
+		expectedSHA []byte
+		want        bool
+	}{
+		{"tamaño y sha coinciden -> reusar", path, uint64(len(data)), sha[:], true},
+		{"tamaño distinto -> re-descargar", path, uint64(len(data)) + 1, sha[:], false},
+		{"tamaño igual pero sha distinto -> re-descargar", path, uint64(len(data)), otherSHA[:], false},
+		{"sin metadata para validar -> reusar como hoy", path, 0, nil, true},
+		{"solo tamaño coincidente (sin sha) -> reusar", path, uint64(len(data)), nil, true},
+		{"solo sha (sin tamaño) que no coincide -> re-descargar", path, 0, otherSHA[:], false},
+		{"archivo inexistente -> descarga normal", filepath.Join(dir, "no-existe.ogg"), uint64(len(data)), sha[:], false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := canReuseMediaFile(tc.path, tc.expectedLen, tc.expectedSHA); got != tc.want {
+				t.Errorf("canReuseMediaFile: got %v, want %v", got, tc.want)
+			}
+		})
+	}
 }
