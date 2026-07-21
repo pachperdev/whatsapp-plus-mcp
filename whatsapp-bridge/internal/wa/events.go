@@ -92,8 +92,8 @@ func (s *Service) HandleMessage(msg *events.Message) {
 	// Extract text content
 	content := ExtractTextContent(msg.Message)
 
-	// Extract media info
-	mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength := ExtractMediaInfo(msg.Message)
+	// Extract media info (el ID participa en el filename generado para evitar colisiones).
+	mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength := ExtractMediaInfo(msg.Message, msg.Info.ID)
 
 	// Skip if there's no content and no media
 	if content == "" && mediaType == "" {
@@ -290,13 +290,21 @@ func (s *Service) HandleHistorySync(historySync *events.HistorySync) {
 					}
 				}
 
+				// El message ID se extrae ANTES de la media porque también participa en el
+				// filename generado: en ráfagas de history sync varios mensajes caen en el
+				// mismo segundo y sin el sufijo del ID sus filenames colisionaban.
+				msgID := ""
+				if msg.Message.Key != nil && msg.Message.Key.ID != nil {
+					msgID = *msg.Message.Key.ID
+				}
+
 				// Extract media info
 				var mediaType, filename, url, directPath string
 				var mediaKey, fileSHA256, fileEncSHA256 []byte
 				var fileLength uint64
 
 				if msg.Message.Message != nil {
-					mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength = ExtractMediaInfo(msg.Message.Message)
+					mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength = ExtractMediaInfo(msg.Message.Message, msgID)
 				}
 
 				// Log the message content for debugging
@@ -323,12 +331,6 @@ func (s *Service) HandleHistorySync(historySync *events.HistorySync) {
 					}
 				} else {
 					sender = jid.User
-				}
-
-				// Store message
-				msgID := ""
-				if msg.Message.Key != nil && msg.Message.Key.ID != nil {
-					msgID = *msg.Message.Key.ID
 				}
 
 				// Get message timestamp

@@ -6,9 +6,12 @@
 package wa
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -649,8 +652,42 @@ func (s *Service) SendMessage(recipient string, message string, mediaPath string
 	return true, fmt.Sprintf("Message sent to %s", recipient)
 }
 
-// DownloadMedia descarga (o reutiliza si ya existe en disco) la media de un mensaje y la
-// guarda en store/<chat>/. Devuelve (ok, mediaType, filename, path, err).
+// canReuseMediaFile decide si un archivo de media ya descargado puede reusarse para el
+// mensaje pedido, validándolo contra la metadata persistida de ESE mensaje. Sin esta
+// validación, una colisión de filename (dos mensajes capturados en el mismo segundo)
+// hacía que DownloadMedia devolviera los bytes del mensaje EQUIVOCADO. Reglas:
+//   - tamaño esperado conocido y distinto al del archivo -> no reusar (re-descargar)
+//   - sha256 esperado conocido y distinto al del archivo -> no reusar (re-descargar)
+//   - sin metadata para validar -> reusar como siempre
+//   - archivo inexistente o ilegible -> no reusar (sigue la descarga normal)
+func canReuseMediaFile(path string, expectedLen uint64, expectedSHA []byte) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	if expectedLen > 0 && uint64(info.Size()) != expectedLen {
+		return false
+	}
+	if len(expectedSHA) > 0 {
+		f, err := os.Open(path)
+		if err != nil {
+			return false
+		}
+		defer f.Close()
+		h := sha256.New()
+		if _, err := io.Copy(h, f); err != nil {
+			return false
+		}
+		if !bytes.Equal(h.Sum(nil), expectedSHA) {
+			return false
+		}
+	}
+	return true
+}
+
+// DownloadMedia descarga (o reutiliza si ya existe en disco Y coincide con la metadata
+// del mensaje) la media de un mensaje y la guarda en store/<chat>/.
+// Devuelve (ok, mediaType, filename, path, err).
 func (s *Service) DownloadMedia(messageID, chatJID string) (bool, string, string, string, error) {
 	client := s.Client
 	messageStore := s.Store
@@ -707,10 +744,15 @@ func (s *Service) DownloadMedia(messageID, chatJID string) (bool, string, string
 		return false, "", "", "", fmt.Errorf("failed to get absolute path: %v", err)
 	}
 
-	// Check if file already exists
+	// Si el archivo ya existe, reusarlo SOLO si coincide con la metadata del mensaje
+	// pedido: por la colisión histórica de filenames (timestamp de captura a segundo),
+	// el archivo en disco puede pertenecer a OTRO mensaje y reusarlo a ciegas
+	// devolvería los bytes equivocados.
 	if _, err := os.Stat(localPath); err == nil {
-		// File exists, return it
-		return true, mediaType, filename, absPath, nil
+		if canReuseMediaFile(localPath, fileLength, fileSHA256) {
+			return true, mediaType, filename, absPath, nil
+		}
+		fmt.Printf("Existing media file %s does not match metadata for message %s (size/sha mismatch), re-downloading...\n", absPath, messageID)
 	}
 
 	// If we don't have all the media info we need, we can't download

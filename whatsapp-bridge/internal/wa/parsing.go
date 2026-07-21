@@ -5,6 +5,8 @@
 package wa
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -148,10 +150,35 @@ func vcardPhone(vcard string) string {
 	return ""
 }
 
+// mediaFilename genera el nombre de archivo para media capturada:
+// "<mediaType>_<YYYYMMDD_HHMMSS>_<id8><ext>". El sufijo id8 (primeros 8 caracteres
+// alfanuméricos del message ID) garantiza unicidad: el timestamp solo tiene
+// granularidad de segundo y en ráfagas de history sync dos mensajes distintos
+// capturados en el mismo segundo colisionaban (mismo filename para bytes distintos).
+// Los IDs de WhatsApp ya son alfanuméricos; igual se sanea defensivamente a
+// [A-Za-z0-9] y, si queda vacío, cae a un hash corto determinista del ID original.
+func mediaFilename(mediaType, ext string, ts time.Time, msgID string) string {
+	id8 := make([]byte, 0, 8)
+	for i := 0; i < len(msgID) && len(id8) < 8; i++ {
+		c := msgID[i]
+		if ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9') {
+			id8 = append(id8, c)
+		}
+	}
+	suffix := string(id8)
+	if suffix == "" {
+		sum := sha256.Sum256([]byte(msgID))
+		suffix = hex.EncodeToString(sum[:4])
+	}
+	return mediaType + "_" + ts.Format("20060102_150405") + "_" + suffix + ext
+}
+
 // ExtractMediaInfo extrae la metadata de media descargable de un mensaje (tipo,
-// filename sugerido, url/directPath y claves). Para poll/group_invite devuelve el
-// tipo con los datos serializados en filename (no son media descargable).
-func ExtractMediaInfo(msg *waE2E.Message) (mediaType string, filename string, url string, directPath string, mediaKey []byte, fileSHA256 []byte, fileEncSHA256 []byte, fileLength uint64) {
+// filename sugerido, url/directPath y claves). El msgID entra en el filename generado
+// para que dos mensajes capturados en el mismo segundo no colisionen (ver mediaFilename).
+// Para poll/group_invite devuelve el tipo con los datos serializados en filename
+// (no son media descargable).
+func ExtractMediaInfo(msg *waE2E.Message, msgID string) (mediaType string, filename string, url string, directPath string, mediaKey []byte, fileSHA256 []byte, fileEncSHA256 []byte, fileLength uint64) {
 	if msg == nil {
 		return "", "", "", "", nil, nil, nil, 0
 	}
@@ -159,30 +186,30 @@ func ExtractMediaInfo(msg *waE2E.Message) (mediaType string, filename string, ur
 	// Desenrollar wrappers que envuelven el mensaje real; sin esto se pierde la media de
 	// dentro: mensajes temporales (ephemeral), ver-una-vez (view once) y documento+caption.
 	if w := msg.GetEphemeralMessage(); w.GetMessage() != nil {
-		return ExtractMediaInfo(w.GetMessage())
+		return ExtractMediaInfo(w.GetMessage(), msgID)
 	}
 	if w := msg.GetViewOnceMessage(); w.GetMessage() != nil {
-		return ExtractMediaInfo(w.GetMessage())
+		return ExtractMediaInfo(w.GetMessage(), msgID)
 	}
 	if w := msg.GetDocumentWithCaptionMessage(); w.GetMessage() != nil {
-		return ExtractMediaInfo(w.GetMessage())
+		return ExtractMediaInfo(w.GetMessage(), msgID)
 	}
 
 	// Check for image message
 	if img := msg.GetImageMessage(); img != nil {
-		return "image", "image_" + time.Now().Format("20060102_150405") + ".jpg",
+		return "image", mediaFilename("image", ".jpg", time.Now(), msgID),
 			img.GetURL(), img.GetDirectPath(), img.GetMediaKey(), img.GetFileSHA256(), img.GetFileEncSHA256(), img.GetFileLength()
 	}
 
 	// Check for video message
 	if vid := msg.GetVideoMessage(); vid != nil {
-		return "video", "video_" + time.Now().Format("20060102_150405") + ".mp4",
+		return "video", mediaFilename("video", ".mp4", time.Now(), msgID),
 			vid.GetURL(), vid.GetDirectPath(), vid.GetMediaKey(), vid.GetFileSHA256(), vid.GetFileEncSHA256(), vid.GetFileLength()
 	}
 
 	// Check for audio message
 	if aud := msg.GetAudioMessage(); aud != nil {
-		return "audio", "audio_" + time.Now().Format("20060102_150405") + ".ogg",
+		return "audio", mediaFilename("audio", ".ogg", time.Now(), msgID),
 			aud.GetURL(), aud.GetDirectPath(), aud.GetMediaKey(), aud.GetFileSHA256(), aud.GetFileEncSHA256(), aud.GetFileLength()
 	}
 
@@ -190,7 +217,7 @@ func ExtractMediaInfo(msg *waE2E.Message) (mediaType string, filename string, ur
 	if doc := msg.GetDocumentMessage(); doc != nil {
 		filename := doc.GetFileName()
 		if filename == "" {
-			filename = "document_" + time.Now().Format("20060102_150405")
+			filename = mediaFilename("document", "", time.Now(), msgID)
 		}
 		return "document", filename,
 			doc.GetURL(), doc.GetDirectPath(), doc.GetMediaKey(), doc.GetFileSHA256(), doc.GetFileEncSHA256(), doc.GetFileLength()
@@ -198,7 +225,7 @@ func ExtractMediaInfo(msg *waE2E.Message) (mediaType string, filename string, ur
 
 	// Check for sticker message (estaticos y animados; .webp). whatsmeow los descarga como imagen.
 	if stk := msg.GetStickerMessage(); stk != nil {
-		return "sticker", "sticker_" + time.Now().Format("20060102_150405") + ".webp",
+		return "sticker", mediaFilename("sticker", ".webp", time.Now(), msgID),
 			stk.GetURL(), stk.GetDirectPath(), stk.GetMediaKey(), stk.GetFileSHA256(), stk.GetFileEncSHA256(), stk.GetFileLength()
 	}
 
