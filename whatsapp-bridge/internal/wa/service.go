@@ -748,8 +748,19 @@ func (s *Service) DownloadMedia(messageID, chatJID string) (bool, string, string
 	// pedido: por la colisión histórica de filenames (timestamp de captura a segundo),
 	// el archivo en disco puede pertenecer a OTRO mensaje y reusarlo a ciegas
 	// devolvería los bytes equivocados.
+	// Optimización: si el filename lo generó el bridge (audio/image/video/sticker)
+	// y ya lleva el sufijo _<id8> de ESTE message ID, el vínculo archivo↔mensaje es
+	// unívoco y la colisión es imposible, así que saltamos el sha256 (que lee el
+	// archivo entero en cada reuso; costoso en videos grandes). El chequeo barato de
+	// tamaño se mantiene siempre. Los documentos NUNCA saltan el sha256: su filename
+	// lo provee el remitente y puede imitar el sufijo, así que ahí no prueba nada.
+	// Los filenames legacy (sin sufijo) también conservan la verificación completa.
+	expectedSHA := fileSHA256
+	if shouldSkipSHA(mediaType, filename, messageID) {
+		expectedSHA = nil
+	}
 	if _, err := os.Stat(localPath); err == nil {
-		if canReuseMediaFile(localPath, fileLength, fileSHA256) {
+		if canReuseMediaFile(localPath, fileLength, expectedSHA) {
 			return true, mediaType, filename, absPath, nil
 		}
 		fmt.Printf("Existing media file %s does not match metadata for message %s (size/sha mismatch), re-downloading...\n", absPath, messageID)

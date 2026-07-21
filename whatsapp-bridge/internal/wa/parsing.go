@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -150,14 +151,12 @@ func vcardPhone(vcard string) string {
 	return ""
 }
 
-// mediaFilename genera el nombre de archivo para media capturada:
-// "<mediaType>_<YYYYMMDD_HHMMSS>_<id8><ext>". El sufijo id8 (primeros 8 caracteres
-// alfanuméricos del message ID) garantiza unicidad: el timestamp solo tiene
-// granularidad de segundo y en ráfagas de history sync dos mensajes distintos
-// capturados en el mismo segundo colisionaban (mismo filename para bytes distintos).
-// Los IDs de WhatsApp ya son alfanuméricos; igual se sanea defensivamente a
-// [A-Za-z0-9] y, si queda vacío, cae a un hash corto determinista del ID original.
-func mediaFilename(mediaType, ext string, ts time.Time, msgID string) string {
+// sanitizedID8 deriva el sufijo id8 de un message ID: primeros 8 caracteres
+// [A-Za-z0-9]. Los IDs de WhatsApp ya son alfanuméricos; igual se sanea
+// defensivamente y, si queda vacío, cae a un hash corto determinista del ID
+// original. Es el vínculo compartido entre la generación de filenames
+// (mediaFilename) y su reconocimiento posterior (filenameHasMessageSuffix).
+func sanitizedID8(msgID string) string {
 	id8 := make([]byte, 0, 8)
 	for i := 0; i < len(msgID) && len(id8) < 8; i++ {
 		c := msgID[i]
@@ -165,12 +164,55 @@ func mediaFilename(mediaType, ext string, ts time.Time, msgID string) string {
 			id8 = append(id8, c)
 		}
 	}
-	suffix := string(id8)
-	if suffix == "" {
+	if len(id8) == 0 {
 		sum := sha256.Sum256([]byte(msgID))
-		suffix = hex.EncodeToString(sum[:4])
+		return hex.EncodeToString(sum[:4])
 	}
-	return mediaType + "_" + ts.Format("20060102_150405") + "_" + suffix + ext
+	return string(id8)
+}
+
+// mediaFilename genera el nombre de archivo para media capturada:
+// "<mediaType>_<YYYYMMDD_HHMMSS>_<id8><ext>". El sufijo id8 (ver sanitizedID8)
+// garantiza unicidad: el timestamp solo tiene granularidad de segundo y en
+// ráfagas de history sync dos mensajes distintos capturados en el mismo segundo
+// colisionaban (mismo filename para bytes distintos).
+func mediaFilename(mediaType, ext string, ts time.Time, msgID string) string {
+	return mediaType + "_" + ts.Format("20060102_150405") + "_" + sanitizedID8(msgID) + ext
+}
+
+// filenameHasMessageSuffix indica si el filename lleva el sufijo _<id8> que
+// mediaFilename habría generado para msgID, es decir, si el archivo está
+// unívocamente vinculado a ESE mensaje. Extrae el segmento tras el último "_"
+// (sin la extensión) y lo compara con sanitizedID8(msgID). Devuelve false para
+// filenames legacy sin sufijo, sufijos de otro mensaje, nombres provistos por
+// el remitente y filename vacío — en esos casos el caller debe mantener la
+// verificación completa.
+func filenameHasMessageSuffix(filename, msgID string) bool {
+	base := strings.TrimSuffix(filename, filepath.Ext(filename))
+	i := strings.LastIndex(base, "_")
+	if i < 0 {
+		return false
+	}
+	suffix := base[i+1:]
+	return suffix != "" && suffix == sanitizedID8(msgID)
+}
+
+// shouldSkipSHA decide si el reuso de media cacheada puede saltar la verificación
+// sha256 (que lee el archivo entero) y quedarse solo con el chequeo de tamaño.
+// Solo es seguro cuando el filename lo genera SIEMPRE el bridge (audio/image/
+// video/sticker; ver ExtractMediaInfo) Y lleva el sufijo _<id8> del message ID
+// pedido: ahí el vínculo archivo↔mensaje es unívoco y la colisión es imposible.
+// Los documentos quedan EXCLUIDOS: conservan el nombre provisto por el remitente
+// (doc.GetFileName()), que puede imitar el patrón _<id8> a voluntad — el sufijo
+// no es prueba de unicidad y se mantiene la validación sha256 completa. Cualquier
+// otro tipo también valida completo (fail-safe).
+func shouldSkipSHA(mediaType, filename, msgID string) bool {
+	switch mediaType {
+	case "audio", "image", "video", "sticker":
+		return filenameHasMessageSuffix(filename, msgID)
+	default:
+		return false
+	}
 }
 
 // ExtractMediaInfo extrae la metadata de media descargable de un mensaje (tipo,

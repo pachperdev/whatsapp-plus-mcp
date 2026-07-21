@@ -104,6 +104,19 @@ Forked from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).
 
 ### Changed
 
+- **Media reuse skips the sha256 pass for collision-proof filenames** (`internal/wa`):
+  `DownloadMedia` re-hashed the whole file on every cache hit to guard against the
+  historic filename collision — negligible for voice notes, real cost for large videos
+  on repeated `download_media` calls. Bridge-generated filenames already embed the
+  `_<id8>` suffix derived from the message ID, so the file↔message link is unambiguous:
+  when the media type is one whose filename is always bridge-generated
+  (audio/image/video/sticker) and the stored filename carries the suffix matching the
+  requested message (`shouldSkipSHA` → `filenameHasMessageSuffix`, sharing the exact
+  sanitization/fallback via the extracted `sanitizedID8` helper), the sha256 check is
+  skipped and only the cheap size check runs. Documents are deliberately excluded —
+  their filename is sender-provided (`doc.GetFileName()`) and could mimic the suffix,
+  so they always keep the full size + sha256 validation, as do legacy filenames
+  (no suffix) and unknown media types (fail-safe).
 - **Dependencies**: whatsmeow bumped to 2026-07-20 (protocol protobuf updates,
   new `IsOnWhatsApp` query format backing `check_whatsapp`, DMs always sent via
   LID — already covered by the `@lid`↔PN unification in `db.py`);
