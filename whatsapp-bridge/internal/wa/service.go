@@ -673,7 +673,7 @@ func canReuseMediaFile(path string, expectedLen uint64, expectedSHA []byte) bool
 		if err != nil {
 			return false
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		h := sha256.New()
 		if _, err := io.Copy(h, f); err != nil {
 			return false

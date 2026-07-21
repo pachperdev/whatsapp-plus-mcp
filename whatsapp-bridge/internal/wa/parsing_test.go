@@ -514,7 +514,8 @@ func isAlnum(s string) bool {
 		return false
 	}
 	for _, r := range s {
-		if !(('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z') || ('0' <= r && r <= '9')) {
+		alnum := ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z') || ('0' <= r && r <= '9')
+		if !alnum {
 			return false
 		}
 	}
