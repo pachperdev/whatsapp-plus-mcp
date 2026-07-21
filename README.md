@@ -140,6 +140,28 @@ uv sync --extra transcription        # instala faster-whisper en el entorno
 > `uv run --extra transcription main.py`, o edita el comando en tu `.mcp.json` /
 > configuración del plugin para agregar `--extra transcription`.
 
+**Ejemplo — registro del server con transcripción habilitada.** Así queda el `.mcp.json` (o la entrada equivalente en la configuración MCP de tu cliente) con el extra activado:
+
+```json
+{
+  "mcpServers": {
+    "whatsapp-plus": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "whatsapp-mcp-server",
+        "run",
+        "--extra",
+        "transcription",
+        "main.py"
+      ]
+    }
+  }
+}
+```
+
+La única diferencia con el registro estándar son los dos args `"--extra", "transcription"` antes de `"main.py"`: con eso `uv` instala y mantiene faster-whisper automáticamente en cada arranque del server. Las variables de la tabla de más abajo son todas opcionales; si necesitas fijar alguna (por ejemplo `WHATSAPP_TRANSCRIPTION_MODEL`), agrégala en un bloque `"env"` dentro de esa misma entrada.
+
 **Auto-selección de modelo según hardware** (override con `WHATSAPP_TRANSCRIPTION_MODEL` o el parámetro `model` de la tool):
 
 | Hardware | Modelo | Peso (descarga única) |
