@@ -13,6 +13,31 @@ Forked from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).
 
 ### Added
 
+- **`transcribe_audio_message` tool (#67)**: local speech-to-text for voice notes /
+  audio messages, behind the new optional `transcription` extra (faster-whisper on
+  CTranslate2, int8 CPU; PyAV decodes WhatsApp's `.ogg` Opus without a system ffmpeg —
+  nothing leaves the machine). Reuses the idempotent `download_media` path, auto-selects
+  the Whisper tier from RAM/cores (`tiny` → `large-v3-turbo`; override via the `model`
+  param or `WHATSAPP_TRANSCRIPTION_MODEL`), derives `beam_size` from the tier (greedy on
+  small tiers, `WHATSAPP_TRANSCRIPTION_BEAM` overrides), keeps a single resident model
+  cached per (model, device, compute) and caps duration with
+  `WHATSAPP_TRANSCRIPTION_MAX_SECONDS` (default 900 s, `0` = unlimited) **before** paying
+  for the transcription. Model weights download once to
+  `WHATSAPP_TRANSCRIPTION_MODELS_DIR` (`~/.whatsapp-mcp/models` in plugin mode,
+  `<store>/models` in repo mode); real download sizes: ~75 MB (`tiny`), ~145 MB
+  (`base`), ~484 MB (`small`), ~1.6 GB (`large-v3-turbo`). The `model` param and env
+  var are validated against that allowlist — any other string would be treated by
+  faster-whisper as an arbitrary Hugging Face repo-id and downloaded, breaking the
+  100% local promise (invalid param → actionable error; invalid env → warning + auto
+  heuristic). Model loading/transcription holds the model lock with a bounded timeout
+  (a busy result instead of queueing forever) and the weight download itself is
+  bounded via `HF_HUB_DOWNLOAD_TIMEOUT` (defaulted to 30 s, user value respected), so
+  a dead connection can never wedge the server. The lazy import keeps the server
+  fully functional without the extra: the tool returns an actionable install hint
+  instead of crashing.
+  Gotcha documented in the README: `uv run main.py` does not install extras — launch
+  with `uv run --extra transcription main.py`.
+
 - **`delete_chat` tool (#66)**: delete an entire chat from the chat list on all your
   devices, via the WhatsApp app-state sync (`appstate.BuildDeleteChat`, unlocked by the
   whatsmeow bump above). Optional `delete_media` also removes the chat's downloaded media

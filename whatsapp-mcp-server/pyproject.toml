@@ -16,6 +16,14 @@ dependencies = [
     "requests>=2.34.2",
 ]
 
+[project.optional-dependencies]
+# STT local para transcribe_audio_message: Whisper sobre CTranslate2. PyAV (embebido
+# en el wheel) decodifica los .ogg Opus de WhatsApp sin ffmpeg del sistema.
+# Ojo: `uv run main.py` NO instala extras; lanzar con `uv run --extra transcription main.py`.
+transcription = [
+    "faster-whisper>=1.2.1",
+]
+
 [tool.setuptools]
 packages = ["whatsapp_mcp"]
 

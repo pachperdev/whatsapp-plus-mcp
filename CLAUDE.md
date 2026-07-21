@@ -10,7 +10,7 @@ A Model Context Protocol (MCP) server for a **personal WhatsApp account**, built
 
 2. **Python MCP Server** (`whatsapp-mcp-server/`): the `whatsapp_mcp` package (`config` → `models` → `db` → `bridge` → `tools`/`prompts` → `server`) exposes WhatsApp functionality as MCP tools. **Reads** come straight from the SQLite DB (`db.py`); **writes/actions** go to the Go bridge over HTTP (`bridge.py`).
 
-> **This fork is far ahead of upstream.** It exposes **66 MCP tools** (upstream had ~12). See `CHANGELOG.md` for the milestone history. Commits and code comments are written in Spanish.
+> **This fork is far ahead of upstream.** It exposes **67 MCP tools** (upstream had ~12). See `CHANGELOG.md` for the milestone history. Commits and code comments are written in Spanish.
 
 ## Architecture
 
@@ -62,12 +62,12 @@ uv run main.py                 # expects the bridge running + DB at ../whatsapp-
 ```
 Dependencies (`pyproject.toml`): `mcp[cli]`, `requests`, `httpx`; Python `>=3.11`. The server uses a global `requests.Session()` for keep-alive pooling to the bridge.
 
-## MCP Tools (66)
+## MCP Tools (67)
 
 Full list and signatures live in `whatsapp-mcp-server/whatsapp_mcp/tools.py` (`@mcp.tool()` decorators). Grouped by area:
 - **Read/search**: `search_contacts`, `list_all_contacts`, `refresh_contacts`, `list_messages`, `list_chats`, `get_chat`, `get_direct_chat_by_contact`, `get_contact_chats`, `get_last_interaction`, `get_message_context`, `get_unread_chats`, `list_groups`.
 - **Send**: `send_message` (supports `reply_to` + `@number` mentions), `send_file`, `send_audio_message`, `send_poll`, `vote_poll`, `send_typing`.
-- **Message ops**: `react_to_message`, `edit_message`, `delete_message`, `star_message`, `mark_as_read`, `download_media`.
+- **Message ops**: `react_to_message`, `edit_message`, `delete_message`, `star_message`, `mark_as_read`, `download_media`, `transcribe_audio_message` (local STT via the optional `transcription` extra).
 - **Chat state**: `mute_chat`, `pin_chat`, `archive_chat`, `delete_chat`, `mark_chat`, `get_chat_settings`, `set_disappearing_messages`, `request_more_history`.
 - **Groups**: `create_group`, `update_group_participants`, `get_group_participants`, `get_group_invite_link` (pure read) / `reset_group_invite_link` (revokes + regenerates), `join_group`, `leave_group`, `set_group_name/topic/description/announce/locked/photo`, join-approval + join-request tools, invite-link info/join (`get_group_info_from_invite`/`join_group_with_invite` operate on LEGACY native group-invite messages; modern WhatsApp clients share invites as plain-text links — route those to `join_group`, which accepts full links including `?mode=gi_t`).
 - **Contacts/identity/presence**: `check_whatsapp`, `get_user_info`, `get_user_devices`, `get_profile_picture`, `get_business_profile`, `block_contact`/`unblock_contact`, `set/subscribe/get_presence`.
@@ -84,6 +84,7 @@ Full list and signatures live in `whatsapp-mcp-server/whatsapp_mcp/tools.py` (`@
 ## Media Handling
 - **Send**: images/videos/documents via `send_file`; voice via `send_audio_message` (needs `.ogg` Opus — FFmpeg auto-converts other formats; see `audio.py`).
 - **Receive**: metadata is stored at capture time; actual bytes are fetched on demand via `download_media` (`message_id` + `chat_jid`) hitting `/api/download`. Capture covers stickers (`.webp`), unwrapped ephemeral/view-once/document-with-caption wrappers, captions, locations, and vCard contacts.
+- **Transcribe**: `transcribe_audio_message` runs **local** STT over voice notes (`whatsapp_mcp/transcription.py`, faster-whisper behind the optional `transcription` extra — lazy import, the server works without it). It reuses `download_media`, auto-selects the Whisper tier from RAM/cores (override: `WHATSAPP_TRANSCRIPTION_MODEL` / `model` param), keeps ONE resident model cached, and caps duration via `WHATSAPP_TRANSCRIPTION_MAX_SECONDS`. Weights download once to the models dir. Note: `uv run main.py` does NOT install extras — launch with `uv run --extra transcription main.py`.
 
 ## Authentication & ban awareness
 - First bridge run requires a QR scan; session persists in `store/whatsapp.db`. Re-auth may be needed after ~20 days. The bridge logs the raw QR (`QR_RAW`) so it can be rendered to a PNG and opened when the terminal can't show it.
@@ -95,6 +96,6 @@ Full list and signatures live in `whatsapp-mcp-server/whatsapp_mcp/tools.py` (`@
 - **Canonical repo**: `pachperdev/whatsapp-plus-mcp` (public, owner-maintained community upstream, MIT).
 - **Claude Code plugin**: `.claude-plugin/plugin.json` declares the MCP server (`whatsapp-plus`) with `${CLAUDE_PLUGIN_ROOT}` paths and sets `WHATSAPP_PLUGIN_MODE=1`; `.claude-plugin/marketplace.json` makes this repo its own marketplace (`pachperdev`, plugin `whatsapp-plus`, source `./`). Install: `/plugin marketplace add pachperdev/whatsapp-plus-mcp` + `/plugin install whatsapp-plus@pachperdev`.
 - **Plugin mode** (`WHATSAPP_PLUGIN_MODE=1`): all mutable data moves to `~/.whatsapp-mcp/` (store, compiled binary under `bin/`, logs) so plugin updates never destroy the session. When the binary is missing, the supervisor resolves it in cascade (`ensure_bridge_binary` in `bridge.py`): download the precompiled asset from the latest GitHub Release (SHA256-verified, GoReleaser naming `whatsapp-bridge-<os>-<arch>`, private-repo auth via `gh auth token`) → fallback to local `go build`. Releases are published by `.github/workflows/release.yml` (GoReleaser, tag `v*`).
-- **Bridge env vars** (all optional, defaults = historic layout; `internal/config`): `WHATSAPP_BRIDGE_ADDR` (loopback-validated), `WHATSAPP_STORE_DIR`, `WHATSAPP_MEDIA_ALLOWED_DIRS` (opt-in send allowlist). **Python env vars**: `WHATSAPP_MESSAGES_DB`, `WHATSAPP_SESSION_DB`, `WHATSAPP_BRIDGE_TOKEN_FILE`, `WHATSAPP_API_BASE_URL`, `WHATSAPP_BRIDGE_BIN`, `WHATSAPP_BRIDGE_LOG`, `WHATSAPP_PLUGIN_MODE` (`whatsapp_mcp/config.py`).
+- **Bridge env vars** (all optional, defaults = historic layout; `internal/config`): `WHATSAPP_BRIDGE_ADDR` (loopback-validated), `WHATSAPP_STORE_DIR`, `WHATSAPP_MEDIA_ALLOWED_DIRS` (opt-in send allowlist). **Python env vars**: `WHATSAPP_MESSAGES_DB`, `WHATSAPP_SESSION_DB`, `WHATSAPP_BRIDGE_TOKEN_FILE`, `WHATSAPP_API_BASE_URL`, `WHATSAPP_BRIDGE_BIN`, `WHATSAPP_BRIDGE_LOG`, `WHATSAPP_PLUGIN_MODE`, plus the transcription set `WHATSAPP_TRANSCRIPTION_{MODEL,MODELS_DIR,DEVICE,COMPUTE,MAX_SECONDS,BEAM}` (`whatsapp_mcp/config.py`).
 - `whatsapp-bridge/go.mod`: Go 1.25, whatsmeow (pinned, ~2026-07), `modernc.org/sqlite`.
 - Roadmap status: **Phases 0–5 complete** (security hardening, modularization Go + Python, MCP contract, tests + CI + linters, plug-and-play packaging as a Claude Code plugin + corporate marketplace with self-managed QR login). See `CHANGELOG.md`.
